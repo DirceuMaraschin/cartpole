@@ -1,0 +1,23 @@
+# Zero definido: pendulo pendurado = 0 graus.
+# Centralizando. Ao chegar, eleve o pendulo.
+# Chegou.
+# PID capturou o pendulo.
+# pendulo_invertido_log v1
+# passos_por_m=40000.0
+# curso_passos=21318
+# curso_m=0.5329
+# curso_real_medido=nao
+# l_eq_m=0.2200
+# w0_rads=6.6776
+# contagens_por_volta=2400
+# passos_por_volta=1600
+# v_max_ms=0.4500
+# a_bal_max=8.00
+# a_freio=8.00
+# kp=40.000 ki=1.000 kd=5.500 kx=1.500 kv=17.500
+# f_controle_hz=1000 f_log_hz=100
+# filtro_omega=janela8amostras+ema0.5
+# modo: 0=PARADO 1=IR_PARA 2=AGUARDAR_TOPO 3=SWINGUP 4=EQUILIBRIO
+# psi = wrap(pi - phi)   psiDot = -omega
+# Perdeu equilibrio.
+# fim do log, amostras perdidas=0
