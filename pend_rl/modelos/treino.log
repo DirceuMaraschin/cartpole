@@ -1,0 +1,58 @@
+Treinando: 250 iteracoes x 4096 passos = 1024 mil passos
+Randomizacao de dominio: LIGADA
+Cada 1000 passos simulados = 20 s de bancada
+
+it    5 | ret   -28.6 | dur  0.53s | KL 0.0047 | clip 0.06 | std 0.605 | VE -0.00 | ep 10
+it   10 | ret   -17.4 | dur  0.78s | KL 0.0030 | clip 0.03 | std 0.599 | VE  0.01 || AVAL sucesso   0.0% psi  4.84deg x  97.1mm  <- salvo
+it   15 | ret    20.7 | dur  1.61s | KL 0.0033 | clip 0.03 | std 0.582 | VE  0.57 | ep 10
+it   20 | ret   529.3 | dur 11.79s | KL 0.0092 | clip 0.10 | std 0.551 | VE  0.77 || AVAL sucesso  50.0% psi  3.29deg x  52.4mm  <- salvo
+it   25 | ret   499.4 | dur 11.34s | KL 0.0042 | clip 0.04 | std 0.514 | VE  0.80 | ep 10
+it   30 | ret   646.3 | dur 13.89s | KL 0.0087 | clip 0.09 | std 0.471 | VE  0.88 || AVAL sucesso  55.0% psi  1.53deg x  43.0mm  <- salvo
+it   35 | ret   338.2 | dur  8.03s | KL 0.0039 | clip 0.04 | std 0.475 | VE  0.87 | ep 10
+it   40 | ret   594.2 | dur 12.84s | KL 0.0039 | clip 0.04 | std 0.461 | VE  0.79 || AVAL sucesso  55.0% psi  2.39deg x  60.9mm  <- salvo
+it   45 | ret   627.4 | dur 13.91s | KL 0.0072 | clip 0.08 | std 0.448 | VE  0.72 | ep 10
+it   50 | ret   372.3 | dur  8.98s | KL 0.0033 | clip 0.03 | std 0.446 | VE  0.79 || AVAL sucesso  50.0% psi  3.44deg x  80.3mm
+it   55 | ret   626.4 | dur 13.40s | KL 0.0071 | clip 0.08 | std 0.410 | VE  0.96 | ep 10
+it   60 | ret   351.7 | dur  8.15s | KL 0.0015 | clip 0.01 | std 0.420 | VE  0.86 || AVAL sucesso  50.0% psi  2.94deg x  62.6mm
+it   65 | ret   297.6 | dur  7.03s | KL 0.0031 | clip 0.03 | std 0.420 | VE  0.83 | ep 10
+it   70 | ret   345.5 | dur  7.89s | KL 0.0084 | clip 0.09 | std 0.418 | VE  0.80 || AVAL sucesso  50.0% psi  3.49deg x  60.9mm
+it   75 | ret   793.6 | dur 16.86s | KL 0.0070 | clip 0.09 | std 0.448 | VE  0.79 | ep 10
+it   80 | ret   486.2 | dur 10.79s | KL 0.0028 | clip 0.03 | std 0.429 | VE  0.78 || AVAL sucesso  25.0% psi  3.74deg x  63.6mm
+it   85 | ret   611.5 | dur 12.94s | KL 0.0072 | clip 0.08 | std 0.397 | VE  0.85 | ep 10
+it   90 | ret   489.2 | dur 10.87s | KL 0.0022 | clip 0.02 | std 0.404 | VE  0.69 || AVAL sucesso  45.0% psi  4.16deg x  57.3mm
+it   95 | ret   381.0 | dur  8.57s | KL 0.0027 | clip 0.03 | std 0.404 | VE  0.83 | ep 10
+it  100 | ret   491.6 | dur 11.00s | KL 0.0037 | clip 0.04 | std 0.393 | VE  0.85 || AVAL sucesso  40.0% psi  4.05deg x  48.9mm
+it  105 | ret   536.5 | dur 11.66s | KL 0.0029 | clip 0.03 | std 0.409 | VE  0.92 | ep 10
+it  110 | ret   778.0 | dur 16.22s | KL 0.0050 | clip 0.06 | std 0.385 | VE  0.71 || AVAL sucesso  30.0% psi  3.08deg x  53.2mm
+it  115 | ret   601.5 | dur 12.90s | KL 0.0064 | clip 0.08 | std 0.383 | VE  0.80 | ep 10
+it  120 | ret   273.1 | dur  6.51s | KL 0.0059 | clip 0.07 | std 0.378 | VE  0.84 || AVAL sucesso  50.0% psi  2.56deg x  53.5mm
+it  125 | ret   764.7 | dur 16.13s | KL 0.0062 | clip 0.06 | std 0.347 | VE  0.81 | ep 10
+it  130 | ret   347.2 | dur  8.08s | KL 0.0067 | clip 0.09 | std 0.340 | VE  0.78 || AVAL sucesso  50.0% psi  3.59deg x  48.1mm
+it  135 | ret   396.8 | dur  9.02s | KL 0.0035 | clip 0.04 | std 0.324 | VE  0.82 | ep 10
+it  140 | ret   362.8 | dur  8.40s | KL 0.0048 | clip 0.06 | std 0.312 | VE  0.80 || AVAL sucesso  35.0% psi  4.40deg x  55.3mm
+it  145 | ret   773.1 | dur 16.06s | KL 0.0076 | clip 0.09 | std 0.315 | VE -0.29 | ep 10
+it  150 | ret   529.2 | dur 11.64s | KL 0.0065 | clip 0.08 | std 0.313 | VE  0.73 || AVAL sucesso  65.0% psi  1.29deg x  37.0mm  <- salvo
+it  155 | ret   413.0 | dur  9.16s | KL 0.0043 | clip 0.05 | std 0.314 | VE  0.87 | ep 10
+it  160 | ret   669.0 | dur 14.17s | KL 0.0042 | clip 0.05 | std 0.310 | VE  0.82 || AVAL sucesso  55.0% psi  2.37deg x  50.7mm
+it  165 | ret   333.3 | dur  7.77s | KL 0.0012 | clip 0.01 | std 0.313 | VE  0.77 | ep 10
+it  170 | ret   604.5 | dur 12.96s | KL 0.0106 | clip 0.15 | std 0.305 | VE  0.81 || AVAL sucesso  45.0% psi  1.80deg x  55.4mm
+it  175 | ret   753.8 | dur 15.96s | KL 0.0060 | clip 0.07 | std 0.289 | VE  0.70 | ep 10
+it  180 | ret   379.6 | dur  8.81s | KL 0.0033 | clip 0.04 | std 0.287 | VE  0.75 || AVAL sucesso  45.0% psi  2.94deg x  60.8mm
+it  185 | ret   579.8 | dur 12.55s | KL 0.0065 | clip 0.07 | std 0.275 | VE  0.80 | ep 10
+it  190 | ret   894.5 | dur 18.59s | KL 0.0076 | clip 0.07 | std 0.253 | VE -5.12 || AVAL sucesso  50.0% psi  2.94deg x  71.2mm
+it  195 | ret   451.6 | dur  9.91s | KL 0.0028 | clip 0.03 | std 0.252 | VE  0.85 | ep 10
+it  200 | ret   664.0 | dur 13.97s | KL 0.0076 | clip 0.09 | std 0.261 | VE  0.92 || AVAL sucesso  50.0% psi  3.57deg x  60.1mm
+it  205 | ret   499.5 | dur 10.98s | KL 0.0056 | clip 0.06 | std 0.263 | VE  0.87 | ep 10
+it  210 | ret   722.9 | dur 15.47s | KL 0.0050 | clip 0.06 | std 0.259 | VE  0.80 || AVAL sucesso  50.0% psi  2.16deg x  48.9mm
+it  215 | ret   430.6 | dur  9.61s | KL 0.0042 | clip 0.05 | std 0.244 | VE  0.67 | ep 10
+it  220 | ret   564.2 | dur 12.26s | KL 0.0065 | clip 0.07 | std 0.246 | VE  0.77 || AVAL sucesso  45.0% psi  2.19deg x  44.3mm
+it  225 | ret   460.4 | dur 10.10s | KL 0.0096 | clip 0.12 | std 0.260 | VE  0.80 | ep 10
+it  230 | ret   493.4 | dur 10.78s | KL 0.0039 | clip 0.04 | std 0.278 | VE  0.79 || AVAL sucesso  45.0% psi  2.78deg x  47.4mm
+it  235 | ret   613.8 | dur 13.28s | KL 0.0060 | clip 0.07 | std 0.273 | VE  0.73 | ep 10
+it  240 | ret   629.4 | dur 13.52s | KL 0.0027 | clip 0.03 | std 0.285 | VE  0.78 || AVAL sucesso  60.0% psi  1.30deg x  29.3mm
+it  245 | ret   375.5 | dur  8.63s | KL 0.0029 | clip 0.03 | std 0.292 | VE  0.84 | ep 10
+it  250 | ret   400.9 | dur  9.14s | KL 0.0053 | clip 0.06 | std 0.288 | VE  0.80 || AVAL sucesso  70.0% psi  1.73deg x  39.3mm  <- salvo
+
+Concluido em 15.7 min
+Pesos finais : modelos/agente.pt
+Melhor aval  : modelos/melhor.pt
