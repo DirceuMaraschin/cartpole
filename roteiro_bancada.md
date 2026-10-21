@@ -217,9 +217,13 @@ acima de ~16° de inclinação — esse é o teto físico do atuador, não do ag
 
 ## Pendência que continua em aberto
 
+Precisa-se medir o comprimento total do espaço de ação do fim de curso da 
+direita até o da esquerda, até os pontos em que as chaves acionam.
+
 `CURSO_REAL_M` ainda está em 0 (escala teórica de 40 000 passos/m). A medida
 decisiva está em `identificacao.md`, seção 6: marque o carrinho nas posições
 `a` e `b`, meça entre as marcas, e divida 21 316 pela distância em metros.
 
 O agente foi treinado com ±8% de incerteza nessa escala, então ele aguenta.
 Mas é informação gratuita que vale a pena ter.
+
