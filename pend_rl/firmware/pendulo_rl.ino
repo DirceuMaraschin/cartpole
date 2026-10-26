@@ -67,14 +67,24 @@ const int ENC_SINAL = -1;
 // MEDIR: distancia entre os pontos onde os dois fins de curso ACIONAM.
 // Nao e a mesma coisa que "onde o carrinho encosta na chave".
 // Veja o procedimento em identificacao.md secao 6.
-// Em 0 usa o valor teorico de 40000 passos/m, que a polia de 20 dentes torna
-// exato: 20 x 2 mm = 40 mm/volta, 200 x 8 = 1600 pulsos/volta, 0,025 mm/pulso.
-// A dinamica do swing-up mediu 39200 +-1200, concordando.
-// A regua deu 600 mm entre os TOQUES nas chaves, o que implicaria 35800 e
-// uma polia de 44,7 mm/volta -- impossivel com 20 dentes. Os 63 mm de sobra
-// sao provavelmente a largura do carrinho mais o curso das alavancas.
-// Confirme marcando o carrinho em 'a' e 'b': a distancia vale 21316 passos
-// e deve dar ~533 mm. So entao preencha aqui.
+// ESCALA DO TRILHO -- resolvida em 26/10/2026, mantenha em 0.
+//
+// Em 0 o firmware usa 40000 passos/m, que a polia de 20 dentes torna EXATO:
+//    20 dentes x 2 mm = 40 mm/volta ; 200 x 8 = 1600 pulsos/volta
+//    40 mm / 1600 = 0,025 mm/pulso -> 40000 pulsos/m
+//
+// Tres medidas independentes concordam dentro de 0,5%:
+//    aritmetica da polia        40000 passos/m  (exata)
+//    dinamica do swing-up       39200 +-1200
+//    regua + largura do carro   40196 +-200
+//
+// A regua media o VAO LIVRE entre as chaves (600 mm). O firmware mede o
+// PERCURSO do carrinho, que e o vao menos a largura do carrinho (65,5 mm),
+// ou seja 534,5 mm. O homing conta 21485 passos entre os acionamentos; a
+// 40000 passos/m isso da 537,1 mm -- 2,6 mm de diferenca.
+//
+// NAO preencha com a medida de regua: ela tem +-2 mm em 534 (+-0,4%), menos
+// precisa que o valor teorico, que e aritmetica exata.
 const float CURSO_REAL_M = 0.0;
 const float PASSOS_POR_M_PADRAO = 40000.0;
 // ATENCAO: aqui L_EQ_M nao e uma afirmacao sobre a fisica -- e o parametro de

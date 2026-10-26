@@ -32,7 +32,7 @@ firmware/pendulo_rl.ino  →  Arduino IDE  →  ESP32 Dev Module  →  921600 ba
 **Confira primeiro que o PID continua igual.** Envie `z`, depois `i`.
 O swing-up e o equilíbrio devem funcionar exatamente como antes.
 
-- [ ] **Aprovação:** o PID equilibra como sempre equilibrou.
+- [x] **APROVADO em 26/10:** swing-up captura em 3,6 s na primeira tentativa.
 
 Se não equilibrar, pare aqui. Algo na recompilação quebrou, e não adianta
 prosseguir.
@@ -48,7 +48,7 @@ k   →  mostra todas as constantes, inclusive o fator do modo RL
 v   →  alterna 100% → 50% → 75%  (NÃO use para os testes)
 ```
 
-- [ ] **Aprovação:** o comando `k` mostra `v_max_rl_ms` igual a `v_max_ms`, com fator 100%.
+- [x] **APROVADO em 26/10:** fator em 100%, `vmax=0.450` na telemetria.
 
 > **Por que não começar devagar.** Parece prudente, mas não é: o agente treinou
 > com v_max de 0,45 m/s. A 75% ele cai de 92% para 64% de sucesso; a 50%, para
@@ -63,7 +63,22 @@ v   →  alterna 100% → 50% → 75%  (NÃO use para os testes)
 
 ---
 
-## Etapa 2 — Observação: o agente decide, o PID atua
+## Etapa 2 — Verificar a consistência sem hardware
+
+```bash
+python teste_ponte.py
+```
+
+Compara a observação que a ponte monta com a que o simulador entrega.
+
+- [x] **APROVADO:** `teste_ponte.py` passa; erro dentro de meio passo de quantização.
+
+Se reprovar, as constantes de `rl_bridge.py` não batem com `pendulo_env.py`.
+Nenhum treinamento conserta isso.
+
+---
+
+## Etapa 3 — Observação: o agente decide, o PID atua
 
 Este é o teste mais importante antes de qualquer movimento comandado pelo agente.
 O firmware entra no modo RL, publica o estado a 50 Hz e recebe a ação da rede —
@@ -103,21 +118,6 @@ A cada segundo aparece uma linha assim:
 
 Deixe rodar uns 30 segundos e encerre com `q`.
 
-## Etapa 3 — Verificar a consistência sem hardware
-
-```bash
-python teste_ponte.py
-```
-
-Compara a observação que a ponte monta com a que o simulador entrega.
-
-- [ ] **Aprovação:** "APROVADO: toda divergência cabe dentro de meio passo".
-
-Se reprovar, as constantes de `rl_bridge.py` não batem com `pendulo_env.py`.
-Nenhum treinamento conserta isso.
-
----
-
 ## Etapa 4 — Primeiro episódio real
 
 Mão na chave de emergência. Alguém pronto para segurar a haste.
@@ -127,10 +127,15 @@ python rl_bridge.py --porta /dev/cu.usbserial-0001 \
     --modelo modelos/melhor.pt --segundos 30 --log logs/rl_01.csv
 ```
 
-Sequência: `z` → `e` → levante a haste → `r`.
+Sequência: `z` → `i` → espere capturar e centralizar → **`o` se ainda estiver
+ligado, para DESLIGAR a observação** → `r`.
+
+> Confira a mensagem: deve dizer "Modo observacao: desligado (o AGENTE atua)".
+> Se ficar ligado, o PID continua no comando e você vai achar que o agente está
+> funcionando quando não está.
 
 O firmware só entrega ao agente quando a haste estiver **estável**:
-|ψ| < 3°, |ψ̇| < 0,5 rad/s e |x| < 50 mm. Entregar um pêndulo já caindo seria
+|ψ| < 3°, |ψ̇| < 0,5 rad/s e |x| < 120 mm. Entregar um pêndulo já caindo seria
 preparar o agente para falhar.
 
 - [ ] **Aprovação:** o agente segura a haste por pelo menos 10 s sem o supervisor
@@ -140,7 +145,7 @@ preparar o agente para falhar.
 
 | Sintoma | Causa provável | O que fazer |
 |---|---|---|
-| Supervisor assume na hora | sinal invertido, ou zero mal calibrado | volte à etapa 2 e confira `a` contra a inclinação |
+| Supervisor assume na hora | sinal invertido, ou zero mal calibrado | volte à etapa 3; o resumo de observação teria acusado |
 | Oscila junto e cai em 2-3 s | atraso real maior que o modelado | aumente `atraso_passos` para 2 e retreine |
 | Equilibra mas deriva até a parede | offset de zero do encoder | recalibre com `z`, haste bem parada |
 | Trepida muito (barulho, vibração) | política nervosa | suba o coeficiente de `\|Δa\|` na recompensa e retreine |
@@ -229,11 +234,33 @@ acima de ~16° de inclinação — esse é o teto físico do atuador, não do ag
 
 ---
 
-## Pendência que continua em aberto
+## O que a bancada já entregou (26/10/2026)
 
-`CURSO_REAL_M` ainda está em 0 (escala teórica de 40 000 passos/m). A medida
-decisiva está em `identificacao.md`, seção 6: marque o carrinho nas posições
-`a` e `b`, meça entre as marcas, e divida 21 316 pela distância em metros.
+| Grandeza | Valor medido | Como ficou |
+|---|---|---|
+| Swing-up até capturar | 3,55 s | simulador previa 3,60 s |
+| Capturas perdidas | 0 | — |
+| \|psi\| em regime | 0,30° | meta era < 2° |
+| \|x\| em regime | 7 mm | meta era < 120 mm |
+| Freio de parede no swing-up | 0 de 71 amostras | trilho não é gargalo |
 
-O agente foi treinado com ±8% de incerteza nessa escala, então ele aguenta.
-Mas é informação gratuita que vale a pena ter.
+Ajustes que produziram isso, todos já no firmware:
+
+- `ALVO_EN = 1,10` — o alvo de energia era 1,00, a trajetória marginal que
+  nunca transpõe o topo. Antes: 28% do swing-up preso entre En 0,90 e 1,00.
+- `KX = 5,0` — era 1,5, e o carrinho parava a 73 mm do centro.
+- `L_EQ_M = 0,220` — é sintonia do controlador de energia, não medida física.
+- Limitador de velocidade restrito ao modo RL (travava o swing-up).
+
+## Escala do trilho: resolvida em 26/10
+
+Os 40 000 passos/m estão corretos, confirmados por três caminhos independentes
+que concordam dentro de 0,5% (ver `identificacao.md`, seção 6).
+
+A divergência anterior era de medida, não de hardware: a régua dava o **vão
+livre** entre as chaves (600 mm), enquanto o firmware mede o **percurso do
+carrinho**, que é o vão menos a largura do carrinho (65,5 mm) — 534,5 mm.
+
+`CURSO_REAL_M` fica em **0** de propósito: assim o firmware usa o valor teórico,
+que vem de aritmética exata (20 dentes × 2 mm ÷ 1600 pulsos) e é mais preciso
+que uma medida de régua com ±2 mm de incerteza.

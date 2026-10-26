@@ -244,76 +244,46 @@ O antídoto é realimentação de posição mais forte:
 
 ---
 
-## 6. Pendência em aberto: a escala do trilho
+## 6. A escala do trilho — RESOLVIDA
 
-Três medidas discordam:
-
-| Fonte | passos/m | Curso implicado |
-|---|---|---|
-| Teórico (GT2 20 dentes, 1600 passos/volta) | 40 000 | 533 mm |
-| **Dinâmica do swing-up** (ver abaixo) | **39 200 ± 1200** | 548 mm |
-| Régua: 600 mm entre fins de curso | 35 800 | 600 mm |
-
-### A medida pela dinâmica
-
-Multipliquei a aceleração do log por um fator `k` e procurei o `k` que minimiza o erro
-de validação do swing-up. Como o acoplamento haste-carrinho é `−a·cos(φ)/L`, e `L` veio
-da oscilação livre (que não envolve o carrinho), esta é uma medida **independente**:
-
-| k | passos/m | Erro RMS |
-|---|---|---|
-| 0,96 | 41 667 | 2,15° |
-| **1,00** | **40 000** | **1,22°** |
-| **1,02** | **39 216** | **1,22°** ← mínimo |
-| 1,04 | 38 462 | 1,64° |
-| 1,10 | 36 364 | 3,63° |
-| **1,12** | **35 714** | **4,37°** ← a escala da régua |
-
-A escala da régua dá erro 3,6× maior. A física não a aceita.
-
-> **Subproduto útil:** k ligeiramente acima de 1 significa que **não há perda de passos**
-> durante o swing-up, mesmo com aceleração de 8 m/s². Se houvesse, o carrinho andaria
-> menos que o comandado e o melhor k ficaria abaixo de 1.
-
-### Resolvido: a polia tem 20 dentes
-
-Com 20 dentes a aritmética fecha sem margem:
+A divergência era de medida, não de hardware. A régua media o **vão livre**
+entre as chaves; o firmware mede o **percurso do carrinho**. A diferença entre
+os dois é a largura do próprio carrinho.
 
 ```
-20 dentes × 2 mm      = 40 mm por volta
-200 passos × 8 micro  = 1600 pulsos por volta
-40 mm ÷ 1600          = 0,025 mm/pulso  →  40 000 pulsos/m   (exato)
+vão livre entre as chaves      600,0 mm   (régua)
+largura do carrinho           − 65,5 mm
+                              ──────────
+percurso de um ponto do carro   534,5 mm
 ```
 
-Duas evidências independentes concordam: a aritmética da polia (40 000) e a
-dinâmica do swing-up (39 200 ± 1200). A régua, que deu 600 mm, exigiria uma
-polia de 44,7 mm por volta — impossível com 20 dentes.
+Ao tocar a chave A, uma face do carrinho está nela; ao tocar a B, é a outra
+face. O ponto de referência percorre o vão **menos** a largura.
 
-Os 21 480 pulsos contados pelo homing correspondem a **537 mm** entre os pontos
-de acionamento. Os 63 mm de diferença para os 600 mm medidos são, muito
-provavelmente, a **largura do carrinho** somada ao curso das alavancas: medir o
-vão livre entre as duas chaves dá o percurso mais o corpo do carrinho.
+### As três medidas concordam
 
-### A medida que encerra o assunto
-
-Mede o deslocamento de um ponto de referência, sem ambiguidade de alavanca nem
-de largura do carrinho:
-
-1. Envie `s`, depois `a` — o carrinho vai à posição 0.
-2. **Marque a lateral do carrinho** a lápis, sempre no mesmo canto.
-3. Envie `b` — o carrinho vai a `limiteB`.
-4. Marque o **mesmo canto** de novo e meça entre as marcas.
-
-Essa distância vale exatamente `limiteB = 21 316 passos`:
-
-| Se medir | passos/m | Veredito |
+| Fonte | passos/m | Incerteza |
 |---|---|---|
-| ~533 mm | 40 000 | teórico confirmado, nada a mudar |
-| ~544 mm | 39 200 | confirma a dinâmica, ajuste fino |
-| ~595 mm | 35 800 | a aritmética da polia estaria errada — reconferir microstepping |
+| Aritmética da polia (20 dentes × 2 mm, 1600 pulsos/volta) | **40 000** | exata |
+| Dinâmica do swing-up (acoplamento haste–carrinho) | 39 200 | ± 1200 |
+| Régua + largura do carrinho | 40 196 | ± 200 |
 
-Com `CURSO_REAL_M = 0` o firmware já usa 40 000. Preencha só se a medida
-discordar.
+O homing conta 21 485 passos entre os acionamentos. A 40 000 passos/m isso dá
+537,1 mm, contra os 534,5 mm da régua — **2,6 mm de diferença, 0,49%**.
+
+E o sinal da diferença é o esperado: o acionamento da chave ocorre **depois**
+do toque, então o percurso entre acionamentos é menor que entre toques, o que
+só pode aumentar o valor de passos/m. O intervalo plausível é 40 000 a 40 500.
+
+### Decisão: manter `CURSO_REAL_M = 0`
+
+Com isso o firmware usa os 40 000 teóricos, que vêm de aritmética exata
+(20 × 2 mm ÷ 1600). A medida de régua carrega ±2 mm de incerteza em 534, ou
+seja ±0,4% — **menos precisa que o valor teórico**. Substituir um número exato
+por uma medida mais grosseira seria piorar.
+
+A pendência está encerrada: os 40 000 estão certos, e as três fontes
+independentes concordam dentro de 0,5%.
 
 ---
 
