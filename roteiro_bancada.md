@@ -32,61 +32,38 @@ firmware/pendulo_rl.ino  →  Arduino IDE  →  ESP32 Dev Module  →  921600 ba
 **Confira primeiro que o PID continua igual.** Envie `z`, depois `i`.
 O swing-up e o equilíbrio devem funcionar exatamente como antes.
 
-- [ ] **Aprovação:** o PID equilibra como sempre equilibrou.
+- [x] **APROVADO em 26/10:** swing-up captura em 3,6 s na primeira tentativa.
 
 Se não equilibrar, pare aqui. Algo na recompilação quebrou, e não adianta
 prosseguir.
 
 ---
 
-## Etapa 1 — O limitador de velocidade
+## Etapa 1 — Confirmar que a velocidade está em 100%
 
-O firmware **inicia em 50%** de propósito (0,225 m/s em vez de 0,45).
+O firmware **inicia em 100%** (0,45 m/s), e deve ficar assim.
 
 ```
-v   →  alterna 50% → 75% → 100%
-k   →  mostra todas as constantes, inclusive o fator atual
+k   →  mostra todas as constantes, inclusive o fator do modo RL
+v   →  alterna 100% → 50% → 75%  (NÃO use para os testes)
 ```
 
-- [ ] **Aprovação:** o comando `k` confirma `v_max_ms` em torno de 0,225 e fator 50%.
+- [x] **APROVADO em 26/10:** fator em 100%, `vmax=0.450` na telemetria.
 
-Mantenha em 50% até a etapa 6.
+> **Por que não começar devagar.** Parece prudente, mas não é: o agente treinou
+> com v_max de 0,45 m/s. A 75% ele cai de 92% para 64% de sucesso; a 50%, para
+> **zero**. Reduzir a velocidade não é começar com cuidado — é colocar o agente
+> num mundo que ele nunca viu, e você depuraria o problema errado.
+>
+> E o swing-up precisa de velocidade plena para bombear energia: abaixo de ~65%
+> a haste não passa da horizontal. Por isso o limitador não toca nele.
+>
+> A proteção do primeiro episódio vem do **supervisor PID** e da **chave de
+> emergência**. Só reduza o fator se treinar um agente para o v_max reduzido.
 
 ---
 
-## Etapa 2 — Malha aberta: o laço roda, o motor não anda
-
-Este é o teste mais importante antes de qualquer movimento. O agente calcula
-tudo, a comunicação roda a 50 Hz, mas **a ação enviada é zero**.
-
-```bash
-source .venv/bin/activate
-python rl_bridge.py --porta /dev/cu.usbserial-0001 --modelo modelos/melhor.pt --malha-aberta
-```
-
-Depois, no terminal: `z` → `e` → levante a haste até o PID capturar → `r`.
-
-O firmware entrega o controle ao agente, mas a ponte manda zero. O carrinho vai
-parar e a haste vai cair — **isso é esperado**. O que importa são os números:
-
-```
-  1234 passos | psi  1.85deg | x  +12.3mm | a  +1.47 | perdidos 0 | rede 0.21ms
-```
-
-- [ ] **Aprovação:**
-  - taxa próxima de **50 Hz** (o contador sobe ~50 por segundo)
-  - **perdidos = 0** ou pouquíssimos
-  - **latência da rede < 2 ms**
-  - a ação `a` muda de sinal junto com a inclinação da haste quando você a move
-    com a mão — se não mudar, o sinal de `psi` está invertido
-
-> **Se `a` tiver o sinal errado**, confira `ENC_SINAL` no firmware e em
-> `rl_bridge.py`. Os dois precisam concordar. Um sinal trocado aqui produz um
-> agente que empurra a haste para o lado da queda.
-
----
-
-## Etapa 3 — Verificar a consistência sem hardware
+## Etapa 2 — Verificar a consistência sem hardware
 
 ```bash
 python teste_ponte.py
@@ -94,14 +71,54 @@ python teste_ponte.py
 
 Compara a observação que a ponte monta com a que o simulador entrega.
 
-- [ ] **Aprovação:** "APROVADO: toda divergência cabe dentro de meio passo".
+- [x] **APROVADO:** `teste_ponte.py` passa; erro dentro de meio passo de quantização.
 
 Se reprovar, as constantes de `rl_bridge.py` não batem com `pendulo_env.py`.
 Nenhum treinamento conserta isso.
 
 ---
 
-## Etapa 4 — Primeiro episódio real, 50% de velocidade
+## Etapa 3 — Observação: o agente decide, o PID atua
+
+Este é o teste mais importante antes de qualquer movimento comandado pelo agente.
+O firmware entra no modo RL, publica o estado a 50 Hz e recebe a ação da rede —
+mas **quem segura a haste continua sendo o PID**.
+
+Por que não usar a ação em zero: o pêndulo cairia em ~0,6 s e sobrariam 30
+amostras, pouco para conferir o que importa. Com o PID segurando, o teste dura
+o que você quiser, e dá para comparar as duas decisões no mesmo estado.
+
+```bash
+source .venv/bin/activate
+python rl_bridge.py --porta /dev/cu.usbserial-0001 --modelo modelos/melhor.pt \
+       --log logs/observa_01.csv
+```
+
+No terminal: `z` → `i` → espere capturar e centralizar → `o` → `r`.
+
+A cada segundo aparece uma linha assim:
+
+```
+  312 passos | psi  0.31deg | x   +7.2mm | a  +0.42 | perdidos 0 | rede 0.21ms
+      | OBSERVA: PID +0.38 agente +0.42, mesmo sinal  94%
+```
+
+- [ ] **Aprovação:**
+  - taxa próxima de **50 Hz** (o contador sobe ~50 por segundo)
+  - **perdidos = 0** ou pouquíssimos
+  - **latência da rede < 2 ms**
+  - **mesmo sinal acima de 60%** e correlação acima de 0,3 no resumo final
+
+> **O que esse teste pega.** Se a convenção de ângulo, a direção do motor ou o
+> `ENC_SINAL` estiverem invertidos em algum ponto da cadeia, o agente decidirá
+> sistematicamente no sentido contrário ao do PID — e o resumo final acusa.
+> Sinal invertido é o erro mais destrutivo possível: o agente empurraria o
+> carrinho para o lado da queda. Descobrir aqui custa nada; descobrir na etapa
+> seguinte custa a haste.
+
+Deixe rodar uns 30 segundos e encerre com `q`.
+
+## Etapa 4 — Primeiro episódio real
 
 Mão na chave de emergência. Alguém pronto para segurar a haste.
 
@@ -110,10 +127,15 @@ python rl_bridge.py --porta /dev/cu.usbserial-0001 \
     --modelo modelos/melhor.pt --segundos 30 --log logs/rl_01.csv
 ```
 
-Sequência: `z` → `e` → levante a haste → `r`.
+Sequência: `z` → `i` → espere capturar e centralizar → **`o` se ainda estiver
+ligado, para DESLIGAR a observação** → `r`.
+
+> Confira a mensagem: deve dizer "Modo observacao: desligado (o AGENTE atua)".
+> Se ficar ligado, o PID continua no comando e você vai achar que o agente está
+> funcionando quando não está.
 
 O firmware só entrega ao agente quando a haste estiver **estável**:
-|ψ| < 3°, |ψ̇| < 0,5 rad/s e |x| < 50 mm. Entregar um pêndulo já caindo seria
+|ψ| < 3°, |ψ̇| < 0,5 rad/s e |x| < 120 mm. Entregar um pêndulo já caindo seria
 preparar o agente para falhar.
 
 - [ ] **Aprovação:** o agente segura a haste por pelo menos 10 s sem o supervisor
@@ -123,7 +145,7 @@ preparar o agente para falhar.
 
 | Sintoma | Causa provável | O que fazer |
 |---|---|---|
-| Supervisor assume na hora | sinal invertido, ou zero mal calibrado | volte à etapa 2 e confira `a` contra a inclinação |
+| Supervisor assume na hora | sinal invertido, ou zero mal calibrado | volte à etapa 3; o resumo de observação teria acusado |
 | Oscila junto e cai em 2-3 s | atraso real maior que o modelado | aumente `atraso_passos` para 2 e retreine |
 | Equilibra mas deriva até a parede | offset de zero do encoder | recalibre com `z`, haste bem parada |
 | Trepida muito (barulho, vibração) | política nervosa | suba o coeficiente de `\|Δa\|` na recompensa e retreine |
@@ -148,17 +170,14 @@ capacidade real dele de recuperar.
 
 ---
 
-## Etapa 6 — Velocidade plena
+## Etapa 6 — Conferir perda de passos
 
-```
-v   →  75%,  depois  v  →  100%
-```
+Já estamos a 100% desde a etapa 1, então aqui o objetivo é outro: confirmar que
+o motor não perdeu passos durante os episódios.
 
-Suba um degrau de cada vez, com um episódio completo em cada.
+- [ ] **Aprovação:** nenhuma deriva na posição física após 3 episódios completos.
 
-- [ ] **Aprovação:** 20 s a 100% de velocidade.
-
-**Atenção à perda de passos.** A 100% e 8 m/s², é o momento de maior risco.
+**Como detectar.** A 100% e 8 m/s², é o momento de maior risco.
 Para detectar: depois do episódio, envie `s` e `a`, e confira se o carrinho
 para no mesmo lugar físico de sempre. Se estiver deslocado, perdeu passos —
 reduza a aceleração ou aumente a corrente do DRV8825.
@@ -208,17 +227,32 @@ acima de ~16° de inclinação — esse é o teto físico do atuador, não do ag
 | `r` | **entrega o controle ao agente** |
 | `s` | para tudo |
 | `m` | liga/desliga o supervisor PID |
-| `v` | limitador de velocidade: 50% → 75% → 100% |
+| `v` | limitador do modo RL (deixe em 100%) |
 | `k` | mostra as constantes |
 | `p` | posição e ângulo |
 | `a`/`b`/`c` | vai ao lado A / lado B / centro |
 
 ---
 
-## Pendência que continua em aberto
+## O que a bancada já entregou (26/10/2026)
 
-Precisa-se medir o comprimento total do espaço de ação do fim de curso da 
-direita até o da esquerda, até os pontos em que as chaves acionam.
+| Grandeza | Valor medido | Como ficou |
+|---|---|---|
+| Swing-up até capturar | 3,55 s | simulador previa 3,60 s |
+| Capturas perdidas | 0 | — |
+| \|psi\| em regime | 0,30° | meta era < 2° |
+| \|x\| em regime | 7 mm | meta era < 120 mm |
+| Freio de parede no swing-up | 0 de 71 amostras | trilho não é gargalo |
+
+Ajustes que produziram isso, todos já no firmware:
+
+- `ALVO_EN = 1,10` — o alvo de energia era 1,00, a trajetória marginal que
+  nunca transpõe o topo. Antes: 28% do swing-up preso entre En 0,90 e 1,00.
+- `KX = 5,0` — era 1,5, e o carrinho parava a 73 mm do centro.
+- `L_EQ_M = 0,220` — é sintonia do controlador de energia, não medida física.
+- Limitador de velocidade restrito ao modo RL (travava o swing-up).
+
+## Pendência que continua em aberto
 
 `CURSO_REAL_M` ainda está em 0 (escala teórica de 40 000 passos/m). A medida
 decisiva está em `identificacao.md`, seção 6: marque o carrinho nas posições
@@ -226,4 +260,3 @@ decisiva está em `identificacao.md`, seção 6: marque o carrinho nas posiçõe
 
 O agente foi treinado com ±8% de incerteza nessa escala, então ele aguenta.
 Mas é informação gratuita que vale a pena ter.
-
