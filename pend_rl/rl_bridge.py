@@ -41,7 +41,7 @@ FMT_SUBIDA  = '<HBiiffBB'      # 21 bytes
 TAM_SUBIDA  = 21
 
 CMD_NADA, CMD_PARAR, CMD_PID, CMD_RL = 0, 1, 2, 3
-F_FC_A, F_FC_B, F_RL, F_SUPERV, F_PERDEU, F_ZERO_OK = 1, 2, 4, 8, 16, 32
+F_FC_A, F_FC_B, F_RL, F_SUPERV, F_PERDEU, F_ZERO_OK, F_OBSERVA = 1, 2, 4, 8, 16, 32, 64
 
 
 def crc8(dados):
@@ -185,6 +185,7 @@ def main():
     t_ult = t0
     lat = []
     psis = []
+    comp = []
     em_rl = False
 
     try:
@@ -219,6 +220,17 @@ def main():
             lat.append((time.time() - ti) * 1000)
             a = float(np.clip(acao[0], -1, 1)) * A_MAX
 
+            # No modo observacao o PID esta atuando. Reconstruimos a acao dele
+            # a partir do mesmo estado (sem o termo integral, que e pequeno) e
+            # comparamos: se os sinais discordarem sistematicamente, alguma
+            # convencao esta invertida -- e melhor descobrir aqui do que com o
+            # agente no comando.
+            observando = bool(est['flags'] & F_OBSERVA)
+            if observando:
+                a_pid = float(np.clip(40.0*psi + 5.5*(-est['omega'])
+                                      + 5.0*x + 17.5*est['v'], -A_MAX, A_MAX))
+                comp.append((a, a_pid))
+
             # --- protecao do lado do PC (a 3a camada; o firmware tem as outras) ---
             cmd = CMD_NADA
             if abs(np.degrees(psi)) > args.psi_abortar:
@@ -237,9 +249,14 @@ def main():
 
             if agora - t_ult >= 1.0:
                 t_ult = agora
+                extra = ''
+                if comp:
+                    ag, pi = np.array(comp[-50:]).T
+                    iguais = 100.0 * np.mean(np.sign(ag) == np.sign(pi))
+                    extra = f' | OBSERVA: PID {pi.mean():+5.2f} agente {ag.mean():+5.2f}, mesmo sinal {iguais:3.0f}%'
                 print(f'  {n:6d} passos | psi {np.mean(psis[-50:]):5.2f}deg | '
                       f'x {x*1000:+6.1f}mm | a {a:+6.2f} | '
-                      f'perdidos {p.perdidos} | rede {np.mean(lat[-50:]):.2f}ms')
+                      f'perdidos {p.perdidos} | rede {np.mean(lat[-50:]):.2f}ms{extra}')
 
             if args.segundos and (agora - t0) >= args.segundos:
                 break
@@ -265,6 +282,20 @@ def main():
     print(f'pacotes perdidos = {p.perdidos}')
     if lat:
         print(f'latencia da rede: media {np.mean(lat):.2f} ms, pior {np.max(lat):.2f} ms')
+    if comp:
+        ag, pi = np.array(comp).T
+        iguais = 100.0 * np.mean(np.sign(ag) == np.sign(pi))
+        corr = float(np.corrcoef(ag, pi)[0, 1]) if len(ag) > 2 else float('nan')
+        print()
+        print('=== MODO OBSERVACAO: agente x PID no mesmo estado ===')
+        print(f'  mesmo sinal em {iguais:.0f}% das amostras   correlacao {corr:+.3f}')
+        print(f'  acao media: PID {pi.mean():+.3f}  agente {ag.mean():+.3f} m/s2')
+        if iguais < 60 or corr < 0.3:
+            print('  >> ALERTA: as decisoes discordam. Suspeite de sinal invertido')
+            print('     em ENC_SINAL, em psi, ou na direcao do motor.')
+            print('     NAO passe para a etapa seguinte antes de resolver.')
+        else:
+            print('  >> Coerente. O agente decide no mesmo sentido que o PID.')
     if args.log:
         print(f'log em {args.log}')
 

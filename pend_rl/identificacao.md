@@ -275,36 +275,45 @@ A escala da régua dá erro 3,6× maior. A física não a aceita.
 > durante o swing-up, mesmo com aceleração de 8 m/s². Se houvesse, o carrinho andaria
 > menos que o comandado e o melhor k ficaria abaixo de 1.
 
-### Como resolver de forma definitiva
+### Resolvido: a polia tem 20 dentes
 
-A divergência provavelmente está no que foi medido: "antes de encostar nas chaves"
-não é o mesmo que "onde as chaves acionam" — uma microchave de alavanca aciona depois
-de um curso do êmbolo, e dois lados somam.
-
-Medida inequívoca, usando só os comandos que já existem no firmware:
-
-1. Envie `s`, depois `a` — o carrinho vai à posição 0 (80 passos após a chave A).
-2. **Marque a lateral do carrinho** com um lápis, na mesa ou no perfil.
-3. Envie `b` — o carrinho vai a `limiteB` (80 passos antes da chave B).
-4. Marque de novo e **meça entre as duas marcas**.
-
-Essa distância corresponde a exatamente `limiteB = 21 316 passos`. Então:
+Com 20 dentes a aritmética fecha sem margem:
 
 ```
-passosPorM = 21316 / (distância medida em metros)
+20 dentes × 2 mm      = 40 mm por volta
+200 passos × 8 micro  = 1600 pulsos por volta
+40 mm ÷ 1600          = 0,025 mm/pulso  →  40 000 pulsos/m   (exato)
 ```
 
-| Se medir | passos/m |
-|---|---|
-| 533 mm | 40 000 (teórico confirmado) |
-| 544 mm | 39 200 (confirma a dinâmica) |
-| 595 mm | 35 800 (confirma a régua anterior) |
+Duas evidências independentes concordam: a aritmética da polia (40 000) e a
+dinâmica do swing-up (39 200 ± 1200). A régua, que deu 600 mm, exigiria uma
+polia de 44,7 mm por volta — impossível com 20 dentes.
 
-Depois preencha `CURSO_REAL_M` no firmware com a distância **entre os pontos de
-acionamento**, que é essa medida mais 4 mm (os dois recuos de 80 passos).
+Os 21 480 pulsos contados pelo homing correspondem a **537 mm** entre os pontos
+de acionamento. Os 63 mm de diferença para os 600 mm medidos são, muito
+provavelmente, a **largura do carrinho** somada ao curso das alavancas: medir o
+vão livre entre as duas chaves dá o percurso mais o corpo do carrinho.
 
-Até lá, o simulador usa 40 000 passos/m e randomiza a escala em **±8%** para cobrir
-toda a faixa em disputa.
+### A medida que encerra o assunto
+
+Mede o deslocamento de um ponto de referência, sem ambiguidade de alavanca nem
+de largura do carrinho:
+
+1. Envie `s`, depois `a` — o carrinho vai à posição 0.
+2. **Marque a lateral do carrinho** a lápis, sempre no mesmo canto.
+3. Envie `b` — o carrinho vai a `limiteB`.
+4. Marque o **mesmo canto** de novo e meça entre as marcas.
+
+Essa distância vale exatamente `limiteB = 21 316 passos`:
+
+| Se medir | passos/m | Veredito |
+|---|---|---|
+| ~533 mm | 40 000 | teórico confirmado, nada a mudar |
+| ~544 mm | 39 200 | confirma a dinâmica, ajuste fino |
+| ~595 mm | 35 800 | a aritmética da polia estaria errada — reconferir microstepping |
+
+Com `CURSO_REAL_M = 0` o firmware já usa 40 000. Preencha só se a medida
+discordar.
 
 ---
 
