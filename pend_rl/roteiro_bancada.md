@@ -218,8 +218,31 @@ O firmware só entrega ao agente quando a haste estiver **estável**:
 |ψ| < 3°, |ψ̇| < 0,5 rad/s e |x| < 120 mm. Entregar um pêndulo já caindo seria
 preparar o agente para falhar.
 
-- [ ] **Aprovação:** o agente segura a haste por pelo menos 10 s sem o supervisor
-      intervir.
+- [x] **APROVADO em 29/10, primeira tentativa** (`logs/rl_01.csv`, 1492 passos
+      a 49,7 Hz): **30 s sem uma única intervenção do supervisor.**
+
+  | Métrica | Simulador previu | Bancada |
+  |---|---|---|
+  | sobrevive 20 s | 87% | **30 s, 1ª tentativa** |
+  | ⟨\|ψ\|⟩ | 1,98° | **1,75°** (máx 7,95°) |
+  | ⟨\|x\|⟩ | 32 mm | **27 mm** |
+  | perdidos | 0 | **0** |
+  | ciclos acima do watchdog | 0 | **0** |
+
+  As duas métricas saíram **melhores** que a previsão. A identificação do
+  modelo (L_eq, atrito viscoso e de Coulomb) foi o que pagou essa
+  transferência.
+
+  Ação equilibrada: 45% positiva, média −0,26 m/s², pico 6,54 de 8,0 — usa o
+  atuador sem saturar. Nada de empurrão sistemático.
+
+  **Um intervalo de 47 ms** (contra os 60 ms do watchdog). A instrumentação
+  disse onde: `espera da serial 45.4 ms`, com `perdidos = 0`. Ou seja, o ESP32
+  publicou em sequência e o **USB entregou os pacotes em lote** — é o
+  temporizador de latência do driver serial do macOS, não o coletor de lixo do
+  Python nem o custo de log/impressão. Aconteceu 1 vez em 1492 ciclos.
+  Monitore: se passar de ~55 ms com frequência, o episódio começa a cair por
+  isso.
 
 **Previsão, medida no simulador com o estado real da bancada:** o agente puxa o
 carrinho dos ~66 mm de volta ao centro com cerca de +2 m/s² e para em torno de
@@ -245,14 +268,67 @@ log+impressão, na espera da serial ou na rede.
 
 ## Etapa 5 — Supervisor desligado (só depois do sucesso na etapa 4)
 
+```bash
+python rl_bridge.py --porta /dev/cu.usbserial-0001 --modelo modelos/melhor.pt \
+       --segundos 20 --log logs/rl_sem_superv_01.csv \
+       --auto --sem-observacao --sem-supervisor
 ```
-m   →  desliga o supervisor PID
-```
+
+> **Não digite `m` durante o episódio — não funciona.** Em modo RL o firmware
+> não lê texto: `loop()` desvia para `processarSerialRL()`, que descarta todo
+> byte que não seja o cabeçalho `0x5A 0xA5`. O `m` é engolido em silêncio. E o
+> protocolo binário só tem quatro comandos (nada, parar, PID, RL) — nenhum
+> deles mexe no supervisor. Por isso ele é desligado **antes** do `r`, e é o
+> que `--sem-supervisor` faz, conferindo a resposta do firmware.
+>
+> A ponte agora avisa quando uma tecla não chega: durante o modo RL só valem
+> `p` (devolve ao PID pelo protocolo), `s` (para) e `q` (encerra).
 
 Agora o agente está sozinho até os 35° do firmware. Este teste mostra a
 capacidade real dele de recuperar.
 
-- [ ] **Aprovação:** aguenta 20 s sem o PID por trás.
+> **Atenção, a rede de proteção some em dois sentidos.** Sem supervisor, se a
+> comunicação cair o firmware **para o carrinho** em vez de devolver ao PID
+> (`modo = PARADO`), e a haste cai. Dado o intervalo de 47 ms visto na etapa 4,
+> isso é um risco concreto. Mão na chave e alguém segurando a haste.
+
+- [x] **APROVADO em 29/10** (`logs/rl_sem_superv_01.csv`, 995 amostras, 20 s a
+      49,8 Hz): aguentou os 20 s inteiros sozinho.
+
+  `flags = 36` (`RL+ZERO_OK`) em **100%** das amostras: sem `F_OBSERVA` (o
+  agente atuava de fato), sem `F_SUPERV`, e **nenhum `F_PERDEU`** — zero ações
+  perdidas.
+
+  | Métrica | Etapa 4 | Etapa 5 |
+  |---|---|---|
+  | ⟨\|ψ\|⟩ | 1,75° | **1,53°** (rms 1,99°, máx 6,15°) |
+  | ⟨\|x\|⟩ | 27 mm | **20 mm** (média +16, faixa −45 a +77) |
+  | pior intervalo | 47 ms | **22,3 ms** |
+
+  Não é "melhor sem supervisor": na etapa 4 ele nunca disparou, logo não
+  influenciava nada. A diferença é variação entre execuções — e um `z` melhor
+  (viés de ψ de −0,215°). O que esta etapa prova é que o agente **não precisa**
+  da rede de proteção.
+
+  Outros números: deriva de +0,76 mm/s (indistinguível do ciclo limite em
+  20 s); velocidade máxima 0,435 de 0,450 m/s — **folga apertada**, o que
+  confirma por que o agente desaba a 75% e a 50%; ação tocou 8,0 m/s² em 1
+  amostra; ciclo limite a 1,40 Hz (período 0,71 s), ~4,7× o tempo natural de
+  queda τ = 0,151 s.
+
+### Achado: a política tremula
+
+⟨\|Δa\|⟩ = **2,31 m/s² por passo**, contra ⟨\|a\|⟩ = 2,00. A ação muda mais que
+a própria magnitude média a cada 20 ms. O coeficiente de `|Δa|` na recompensa
+(0,05) ficou fraco demais.
+
+Não impede o equilíbrio — as duas etapas passaram acima da previsão. Mas tem
+consequência mecânica: reversões rápidas de aceleração são a causa clássica de
+**perda de passos** num motor de passo. Por isso a etapa 6 vem agora.
+
+Se a etapa 6 acusar perda de passos, o conserto é retreinar com o coeficiente
+de `|Δa|` maior (0,15 a 0,20) em `pendulo_env.py`, aceitando um pouco mais de
+⟨\|ψ\|⟩ em troca de um comando mais suave.
 
 > Se reprovar aqui mas tiver passado na etapa 4, não é fracasso: significa que
 > o agente controla bem mas recupera mal. Religue o supervisor (`m`) e use
@@ -267,10 +343,38 @@ o motor não perdeu passos durante os episódios.
 
 - [ ] **Aprovação:** nenhuma deriva na posição física após 3 episódios completos.
 
-**Como detectar.** A 100% e 8 m/s², é o momento de maior risco.
-Para detectar: depois do episódio, envie `s` e `a`, e confira se o carrinho
-para no mesmo lugar físico de sempre. Se estiver deslocado, perdeu passos —
-reduza a aceleração ou aumente a corrente do DRV8825.
+**Por que agora.** Medimos ⟨\|Δa\|⟩ = 2,31 m/s² por passo na etapa 5 (ver o
+achado lá): a aceleração reverte de sinal constantemente a 50 Hz. É a condição
+clássica para um motor de passo perder sincronismo — mais exigente que uma
+aceleração alta e constante.
+
+**Como medir, de forma repetível.** O ponto é comparar a *crença* do firmware
+sobre a posição com a realidade física.
+
+1. Antes de tudo, mande `c` (vai ao centro) e marque com lápis ou fita onde
+   o carrinho parou. Essa é a referência.
+2. Rode 3 episódios completos:
+
+   ```bash
+   python rl_bridge.py --porta /dev/cu.usbserial-0001 --modelo modelos/melhor.pt \
+          --segundos 30 --log logs/rl_passos_0N.csv --auto --sem-observacao
+   ```
+
+3. Depois de cada um, mande `s` e depois `c`, e confira se o carrinho volta
+   **exatamente** à marca.
+
+> **Onde digitar o `c`.** Quando a ponte encerra, ela libera a porta — então
+> abra o Monitor Serial da IDE e mande `c` por lá. Durante o episódio não
+> funcionaria: em modo RL o firmware não lê texto. E **não regrave o firmware**
+> entre os episódios: isso refaz o homing e apaga justamente a evidência que
+> você está tentando medir.
+
+Se parar deslocado, perdeu passos. A quantidade importa: 1 mm = 40 passos.
+Conserto, em ordem de preferência: aumentar a corrente do DRV8825; reduzir
+`A_BAL_MAX` de 8 para 6; retreinar com o coeficiente de `|Δa|` maior.
+
+> Um `z` **não** serve aqui: ele zera o encoder, não a posição do carrinho.
+> Quem referencia o carrinho é o homing nas chaves de fim de curso.
 
 ---
 
@@ -282,28 +386,125 @@ Rode 3 episódios de 60 s gravando o log, depois compare com o simulador:
 python rl_bridge.py --porta ... --segundos 60 --log logs/rl_final_01.csv
 ```
 
-| Métrica | Simulador previu | Bancada real |
-|---|---|---|
-| sobrevive 20 s | 87% | ? |
-| ⟨\|ψ\|⟩ | 1,98° | ? |
-| ⟨\|x\|⟩ | 32 mm | ? |
+- [x] **APROVADO em 29/10** — `logs/rl_final_{01,02,03}.csv`, 3 × 60 s,
+      2984 amostras cada a 49,7 Hz, **os três completos**.
 
-Se a bancada ficar **muito** pior que o simulador, o modelo tem algo errado e
-vale voltar à identificação com os novos logs. Se ficar próxima, a transferência
-funcionou.
+| Métrica | Simulador previu | Bancada (8.952 amostras) |
+|---|---|---|
+| sobrevive 20 s | 87% | **3/3 × 60 s** |
+| ⟨\|ψ\|⟩ | 1,98° | **1,46°** (rms 1,9°, máx 8,85°) |
+| ⟨\|x\|⟩ | 32 mm | **17,6 mm** |
+
+Por episódio: ⟨|ψ|⟩ de 1,30°, 1,51° e 1,57°; ⟨|x|⟩ de 17,0, 17,8 e 17,9 mm.
+
+**Deriva de −0,02, −0,16 e +0,14 mm/s** — zero dentro do ruído. Confirma a
+etapa 6 por um caminho independente: sem perda de passos, a posição não
+escorrega ao longo de 60 s.
+
+`perdidos = 0` e CRC = 0 nos três. Um único `F_PERDEU` em 8.952 amostras, no
+pico de 73 ms do episódio 1 — que **teria derrubado o episódio** com o
+watchdog antigo de 60 ms.
+
+Saturações: ação em 8,0 m/s² em 0,20% das amostras, velocidade em 0,450 m/s em
+0,26%. Usa os limites, não vive nos limites.
+
+### Dois ajustes que viabilizaram isto (29/10)
+
+- **Política em numpy puro** no lugar do torch no laço quente. A conta é a
+  mesma (confere em 2,4e−7), mas o torch pagava agendamento de threads e
+  picava em 20 ms dentro de um laço de 20 ms. Latência: média 0,57 → **0,05
+  ms**, pior caso 59× melhor.
+- **`RL_TIMEOUT_MS` de 60 → 100 ms.** Os 60 ms eram 3 ciclos; o lote do
+  USB-serial no macOS produz lacunas de até 53 ms no relógio do PC e o
+  trânsito USB soma por cima. 100 ms fica abaixo do tempo de dobra do erro
+  (105 ms), e com o supervisor ligado quem assume é o PID.
+
+**Veredito da transferência:** as três métricas saíram **melhores** que a
+previsão. A identificação do modelo (L_eq pelo período, atrito separado em
+viscoso e de Coulomb) é o que pagou isso — o agente nunca viu esta bancada.
 
 ---
 
 ## Etapa 8 — Testes de perturbação
 
+```bash
+python rl_bridge.py --porta /dev/cu.usbserial-0001 --modelo modelos/melhor.pt \
+       --segundos 90 --log logs/rl_perturba_01.csv --auto --sem-observacao
+```
+
+**Supervisor LIGADO** nesta etapa (é o padrão). O ponto é medir a recuperação
+do agente, não perder a haste no primeiro toque forte.
+
 Com o agente equilibrando, dê **toquinhos leves** na haste com o dedo.
-Comece muito suave e aumente aos poucos.
+Comece muito suave e aumente aos poucos, esperando o pêndulo estabilizar entre
+um toque e o outro (uns 3 s) para que cada perturbação seja medível em
+separado.
 
 O simulador prevê 90% de recuperação para chutes de 1,0 rad/s, e **zero**
 acima de ~16° de inclinação — esse é o teto físico do atuador, não do agente.
+Como o supervisor assume em 20°, o que você vai ver acima de ~16° é o PID
+pegando, e isso é o resultado esperado, não falha.
 
-- [ ] **Aprovação:** recupera de toques leves de forma visivelmente mais suave
-      que o PID.
+Referência do regime sem perturbação, da etapa 7: ⟨|ψ|⟩ = 1,46°, |ψ| máximo
+8,85°. Qualquer pico acima de ~9° no log é perturbação sua, e não o ciclo
+limite — é assim que vou separar os eventos.
+
+- [~] **PARCIAL em 29/10** (`logs/rl_perturba_01.csv`, 3278 amostras, 65,9 s).
+
+  **Rejeição de perturbação: aprovada.** |ψ̇| chegou a **1,57 rad/s** em 1,89%
+  das amostras — acima do chute de 1,0 rad/s que o simulador testou — e o
+  ângulo nunca passou de **8,55°**, que é *menos* que o máximo de 8,85° sem
+  perturbação alguma. Zero amostras acima de 9°. O agente absorveu os toques
+  antes de virarem ângulo. O operador relatou "os toques não diferem do PID":
+  não é falta de resposta, é ausência de drama.
+
+  **Reprovado por posição.** Aos 65,9 s o carrinho fugiu para −233 mm e bateu
+  no `X_LIM_RL`: `# SUPERVISOR: carrinho fora da faixa util`. A deriva
+  acelerou de −6,8 mm/s (10 s) para −33,4 mm/s (3 s), com a velocidade
+  saturada em −0,450 m/s. Falha de posição, não de ângulo.
+
+  **Tremulação confirmada.** O operador relatou controle mais "nervoso" que o
+  PID, e a medida concorda: **20,7 inversões de sinal da aceleração por
+  segundo**, |Δa|/|a| = **1,14** — a ação se reinventa a cada ciclo.
+
+### A causa de fundo: a recompensa não pagava por nada disso
+
+Em regime permanente, com os valores medidos na bancada:
+
+| Termo | Peso efetivo |
+|---|---|
+| sobrevivência | **1,000** |
+| ψ (1,46°) | 0,001 |
+| x (17,6 mm) | 0,001 |
+| Δa (2,31) | 0,014 |
+
+Os três termos de forma somavam 0,016 contra 1,000 de sobrevivência. O agente
+era pago, na prática, só por não cair — e **tremular não custava nada**.
+
+A coluna `suavid` do `avaliar.py` já media isso e marcava **1,724** para este
+agente, contra 2,31 na bancada: o simulador previa a tremulação desde o
+início e ninguém confrontou esse número com a bancada.
+
+Correção aplicada em `pendulo_env.py` (anterior salvo em
+`pendulo_env_v1.py.bak`):
+
+- **Δa de 0,05 → 0,50**, linear. Passa a pesar 0,144 no nível antigo de
+  tremulação contra 0,037 se suavizar — 0,107 por passo, mais de 100 de
+  retorno por episódio. Linear e não quadrático de propósito: o gradiente
+  quadrático desaparece justamente perto de zero, onde queremos empurrar.
+- **Termo linear de posição** `0,15·|x|/x_lim` somado ao quadrático. O
+  quadrático torna x pequeno quase gratuito, e o agente só reagia quando x já
+  era grande — quando o limite de 0,45 m/s já impedia recuperar. Foi assim que
+  o carrinho fugiu.
+
+- [ ] **Aprovação (a refazer com o agente v2):** recupera de toques leves de
+      forma visivelmente mais suave que o PID, sem fuga de posição em 90 s.
+
+> **O que observar a olho nu.** O PID responde a um toque com uma correção
+> brusca e uma oscilação que demora a sumir. Espera-se que o agente desloque o
+> carrinho antes, com um movimento mais longo e menos abrupto. Se for o
+> contrário — o agente mais nervoso que o PID — vale retreinar com o
+> coeficiente de `|Δa|` maior, pelo mesmo motivo do achado da etapa 5.
 
 ---
 
@@ -316,7 +517,7 @@ acima de ~16° de inclinação — esse é o teto físico do atuador, não do ag
 | `i` | swing-up automático + PID |
 | `r` | **entrega o controle ao agente** |
 | `s` | para tudo |
-| `m` | liga/desliga o supervisor PID |
+| `m` | liga/desliga o supervisor PID (**só fora do modo RL**; use `--sem-supervisor`) |
 | `v` | limitador do modo RL (deixe em 100%) |
 | `k` | mostra as constantes |
 | `p` | posição e ângulo |

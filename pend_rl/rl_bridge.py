@@ -56,7 +56,7 @@ CMD_NADA, CMD_PARAR, CMD_PID, CMD_RL = 0, 1, 2, 3
 
 # Tem de bater com RL_TIMEOUT_MS do firmware. Passado esse tempo sem receber
 # acao, o ESP32 devolve o controle ao PID E SAI DO MODO BINARIO.
-RL_TIMEOUT_S = 0.060
+RL_TIMEOUT_S = 0.100
 F_FC_A, F_FC_B, F_RL, F_SUPERV, F_PERDEU, F_ZERO_OK, F_OBSERVA = 1, 2, 4, 8, 16, 32, 64
 
 
@@ -73,6 +73,33 @@ def wrap(a):
     return np.arctan2(np.sin(a), np.cos(a))
 
 
+class PoliticaNumpy:
+    """O Ator em numpy puro: 3 matrizes e 2 tanh.
+
+    Por que tirar o torch do laco: a conta em si leva ~0,1 ms, mas o torch
+    ocasionalmente paga agendamento de threads e alocacao, e medimos picos de
+    20 ms dentro do laco de 20 ms (episodio 2 de 29/10). Num orcamento de
+    60 ms de watchdog, 20 ms e inaceitavel por um custo que nao e de calculo.
+    Aqui sao tres produtos matriz-vetor 5x64, 64x64, 64x1 -- microssegundos,
+    sem thread pool, sem alocador, sem variancia.
+
+    Deterministico = a media da gaussiana, exatamente como
+    AtorCritico.agir(deterministico=True).
+    """
+
+    def __init__(self, caminho):
+        est = torch.load(caminho, map_location='cpu', weights_only=True)['rede']
+        self.W, self.b = [], []
+        for i in (0, 2, 4):                     # as camadas Linear do ator
+            self.W.append(est[f'ator.{i}.weight'].numpy().astype(np.float64).T.copy())
+            self.b.append(est[f'ator.{i}.bias'].numpy().astype(np.float64).copy())
+
+    def agir(self, obs):
+        h = np.tanh(obs @ self.W[0] + self.b[0])
+        h = np.tanh(h @ self.W[1] + self.b[1])
+        return h @ self.W[2] + self.b[2]
+
+
 class Ponte:
     def __init__(self, porta, baud=921600):
         self.ser = serial.Serial(porta, baud, timeout=0.05)
@@ -84,6 +111,8 @@ class Ponte:
         self.perdidos = 0
         self.buf = b''
         self.msgs = []
+        self.bruto = []      # (hora, texto) de TODA linha de texto
+        self.crc_ruim = 0    # pacotes descartados por CRC
         self.verboso = False
 
     # ------------- cabecalho em texto, antes do modo binario -------------
@@ -126,6 +155,14 @@ class Ponte:
             txt = linha.decode('utf-8', 'replace').strip()
             if not txt:
                 continue
+            # Guarda TUDO com hora, inclusive o que nao comeca com '#'. Em
+            # 29/10 tres episodios terminaram sem nenhuma mensagem visivel, e
+            # um fragmento partido entre duas leituras perde o '#' e era
+            # descartado aqui em silencio -- levando embora justamente a
+            # explicacao. O dump no fim imprime este historico.
+            self.bruto.append((time.time(), txt))
+            if len(self.bruto) > 400:
+                del self.bruto[:200]
             if txt.startswith('#'):
                 self.msgs.append(txt)
                 print(f'  [esp32] {txt}')
@@ -155,6 +192,10 @@ class Ponte:
                         continue
                 p = self.buf[i:i + TAM_SUBIDA]
                 if crc8(p[:20]) != p[20]:
+                    # Pode ser um 0x55AA que apareceu DENTRO do payload de um
+                    # pacote: avanca 2 bytes e ressincroniza. Contamos porque,
+                    # em excesso, explica "sem pacotes" com o ESP32 ainda vivo.
+                    self.crc_ruim += 1
                     self.buf = self.buf[i + 2:]
                     continue
                 self.buf = self.buf[i + TAM_SUBIDA:]
@@ -196,7 +237,7 @@ class Ponte:
         return obs, x, psi
 
 
-def sequencia_auto(p, observar=True):
+def sequencia_auto(p, observar=True, supervisor=True):
     """Faz z -> i -> espera captura -> centraliza -> o -> r sozinho.
 
     Digitar comandos enquanto o firmware fala e a receita para errar o tempo.
@@ -244,6 +285,28 @@ def sequencia_auto(p, observar=True):
         return False
     print('  capturado; aguardando o carrinho centralizar')
     bombear(4.0)
+
+    # O supervisor TEM de ser resolvido aqui, antes do 'r'. Em modo RL o
+    # firmware nao le texto nenhum (loop(): "protocolo binario; nada de
+    # texto"), e o protocolo binario nao tem comando para o supervisor. Um 'm'
+    # digitado durante o episodio e descartado em silencio.
+    for tentativa in range(3):
+        p.msgs.clear()
+        p.texto('m')
+        m = esperar('Supervisor PID', 3, 'a confirmacao do supervisor')
+        if m is None:
+            print('  >> O firmware nao respondeu ao "m".')
+            return False
+        # "DESLIGADO" contem "LIGADO", entao testa o caso negativo primeiro.
+        ligado = 'DESLIGADO' not in m.upper()
+        if ligado == supervisor:
+            break
+        print(f'  o toggle do supervisor caiu em {"ligado" if ligado else "desligado"}; '
+              f'reenviando')
+    else:
+        print('  >> Nao consegui deixar o supervisor no estado pedido.')
+        return False
+    print(f'  supervisor PID {"LIGADO (rede de protecao ativa)" if supervisor else "DESLIGADO (sem rede de protecao)"}')
 
     # O 'o' e um TOGGLE, nao um "ligar". Se a observacao ja estava ligada de um
     # teste manual anterior, este 'o' a DESLIGA -- e o agente passaria a comandar
@@ -333,6 +396,10 @@ def main():
     ap.add_argument('--sem-observacao', action='store_true',
                     help='etapa 4+: o AGENTE atua de verdade (sem isso, o PID '
                          'segura a haste e o agente so assiste)')
+    ap.add_argument('--sem-supervisor', action='store_true',
+                    help='etapa 5: desliga o supervisor PID ANTES da entrega. '
+                         'Em modo RL isso nao pode ser mudado -- o firmware nao '
+                         'le texto e o protocolo nao tem comando para isso')
     ap.add_argument('--verboso', action='store_true',
                     help='mostra tambem a telemetria do firmware (inunda o terminal)')
     ap.add_argument('--psi-abortar', type=float, default=18.0,
@@ -343,6 +410,18 @@ def main():
     rede.load_state_dict(torch.load(args.modelo, map_location='cpu',
                                     weights_only=True)['rede'])
     rede.eval()
+    pol = PoliticaNumpy(args.modelo)
+
+    # Confere que a versao numpy reproduz o torch antes de confiar nela.
+    rng = np.random.default_rng(0)
+    pior = 0.0
+    for _ in range(2000):
+        o = rng.uniform(-1.5, 1.5, 5).astype(np.float32)
+        at, _, _ = rede.agir(o, deterministico=True)
+        pior = max(pior, abs(float(at[0]) - float(pol.agir(o)[0])))
+    if pior > 1e-4:
+        sys.exit(f'ERRO: politica numpy divergiu do torch em {pior:.2e}')
+    print(f'Politica em numpy confere com o torch (pior erro {pior:.2e})')
 
     # Aquece a rede ANTES do laco. A primeira inferencia do torch paga a
     # alocacao de buffers e a escolha de kernels: medimos 737 ms nela. No meio
@@ -350,10 +429,10 @@ def main():
     # o episodio. Aqui, custa nada.
     _aq = np.zeros(5, dtype=np.float32)
     for _ in range(50):
-        rede.agir(_aq, deterministico=True)
+        pol.agir(_aq)
     _t = time.perf_counter()
     for _ in range(100):
-        rede.agir(_aq, deterministico=True)
+        pol.agir(_aq)
     print(f'Modelo carregado: {args.modelo}')
     print(f'Rede aquecida: {(time.perf_counter()-_t)*10:.2f} ms por inferencia '
           f'(orcamento do laco: 20 ms)')
@@ -370,6 +449,11 @@ def main():
     elif args.sem_observacao:
         print('*** O AGENTE VAI COMANDAR O CARRINHO DE VERDADE ***')
         print('    Mao na chave de emergencia. Alguem pronto para segurar a haste.')
+    if args.sem_supervisor:
+        print('*** SUPERVISOR PID DESLIGADO: NAO HA REDE DE PROTECAO ***')
+        print('    O agente vai sozinho ate os 35 graus do firmware. E se a')
+        print('    comunicacao cair, o firmware PARA o carrinho em vez de')
+        print('    devolver ao PID -- a haste cai. Segure-a com a mao.')
 
     p = Ponte(args.porta, args.baud)
     p.ler_constantes()
@@ -392,7 +476,8 @@ def main():
     # haste: sem observacao o pendulo simplesmente cairia e nao haveria o que ver.
     observar = not args.sem_observacao or args.malha_aberta
     if args.auto:
-        if not sequencia_auto(p, observar=observar):
+        if not sequencia_auto(p, observar=observar,
+                              supervisor=not args.sem_supervisor):
             print('\nA sequencia nao completou. Nada foi coletado.')
             try:
                 p.texto('s'); time.sleep(0.1); p.ser.close()
@@ -418,10 +503,16 @@ def main():
     comp = []
     em_rl = False
     mudos = 0
-    t_acao = None       # instante do ultimo envio: e o relogio do watchdog
+    # Comeca com o relogio AGORA, nao None: a sequencia automatica acabou de
+    # alimentar o watchdog, e entre ela e o primeiro envio do laco existe uma
+    # lacuna real. Com None a guarda ficava desarmada justamente na primeira
+    # iteracao -- se o travamento caisse ali, o pacote era respondido com o
+    # firmware ja fora do modo binario.
+    t_acao = time.time()   # instante do ultimo envio: e o relogio do watchdog
     intervalos = []     # intervalos entre envios, em ms
     custo_pos = 0.0     # ms gastos em log+impressao DEPOIS do envio anterior
     t_espera = 0.0      # ms esperando a serial nesta iteracao
+    cmd_pend = CMD_NADA  # comando do teclado a embarcar no proximo envio
     t_prim = None       # instante do primeiro pacote em modo RL
     t_ult_rl = None     # instante do ultimo pacote em modo RL
 
@@ -431,7 +522,26 @@ def main():
                 c = fila.get().lower()
                 if c == 'q':
                     raise KeyboardInterrupt
-                if c:
+                if not c:
+                    continue
+                if em_rl:
+                    # Em modo RL o firmware NAO le texto -- loop() desvia para
+                    # processarSerialRL(), que descarta tudo o que nao seja o
+                    # cabecalho 0x5A 0xA5. Antes mandavamos a tecla e
+                    # imprimiamos "[enviado]", o que era mentira: o byte era
+                    # engolido em silencio. So os comandos do PROTOCOLO chegam,
+                    # e supervisor nao e um deles (use --sem-supervisor).
+                    if c[0] == 'p':
+                        cmd_pend = CMD_PID
+                        print('  [devolvendo ao PID pelo protocolo binario]')
+                    elif c[0] == 's':
+                        cmd_pend = CMD_PARAR
+                        print('  [parando pelo protocolo binario]')
+                    else:
+                        print(f'  [IGNORADO: "{c[0]}" nao chega ao firmware em '
+                              f'modo RL. Aqui so valem p (volta ao PID), '
+                              f's (para) e q (encerra).]')
+                else:
                     p.texto(c[0])
                     print(f'  [enviado: {c[0]}]')
 
@@ -444,10 +554,18 @@ def main():
                     if mudos == 1:
                         print('  !! sem pacotes do ESP32')
                     elif mudos == 10:
-                        print('     O firmware parou de falar binario, ou seja: saiu do')
-                        print('     modo RL. Causa quase sempre o watchdog de 60 ms --')
-                        print('     alguma coisa travou o laco e a acao nao chegou a tempo.')
-                        print('     Confira a flag F_PERDEU (16) no log e tecle q.')
+                        print('     O firmware parou de falar binario: saiu do modo RL.')
+                        print(f'     CRC ruim ate agora: {p.crc_ruim}')
+                        print(f'     bytes parados no buffer: {len(p.buf)} -> '
+                              f'{p.buf[:60]!r}')
+                        print('     ultimas linhas de texto do ESP32 (inclui as que nao')
+                        print('     comecam com "#", normalmente escondidas):')
+                        if p.bruto:
+                            for ht, tx in p.bruto[-8:]:
+                                print(f'       t={ht - t0:7.3f}s  {tx!r}')
+                        else:
+                            print('       (nenhuma -- o ESP32 nao mandou texto algum)')
+                        print('     Tecle q para ver o relatorio completo.')
                 time.sleep(0.01)
                 continue
             mudos = 0
@@ -470,7 +588,7 @@ def main():
 
             # --- rede neural ---
             ti = time.time()
-            acao, _, _ = rede.agir(obs, deterministico=True)
+            acao = pol.agir(obs)
             lat.append((time.time() - ti) * 1000)
             a = float(np.clip(acao[0], -1, 1)) * A_MAX
 
@@ -486,7 +604,8 @@ def main():
                 comp.append((a, a_pid))
 
             # --- protecao do lado do PC (a 3a camada; o firmware tem as outras) ---
-            cmd = CMD_NADA
+            cmd = cmd_pend
+            cmd_pend = CMD_NADA
             if abs(np.degrees(psi)) > args.psi_abortar:
                 cmd = CMD_PID
                 print(f'  >> PC abortando: psi = {np.degrees(psi):.1f} graus')
@@ -501,7 +620,7 @@ def main():
             # travamento na inferencia acontece DEPOIS daquele instante e
             # passaria batido. Foi assim que a guarda falhou no primeiro teste.
             t_pre = time.time()
-            if t_acao is not None and (t_pre - t_acao) > RL_TIMEOUT_S:
+            if (t_pre - t_acao) > RL_TIMEOUT_S:
                 print(f'  !! lacuna de {(t_pre - t_acao)*1000:.0f} ms desde a ultima '
                       f'acao: o firmware ja estourou o watchdog.')
                 print('     NAO vou responder a este pacote -- os bytes seriam lidos')
@@ -516,7 +635,9 @@ def main():
 
             p.enviar_acao(0.0 if args.malha_aberta else a, est['seq'], cmd)
             t_env = time.time()
-            if t_acao is not None:
+            if n == 0:
+                t_prim = t_env          # primeiro envio: nao ha intervalo ainda
+            else:
                 intervalos.append((t_env - t_acao) * 1000)
                 # Um intervalo acima de 40 ms e a antessala dos 60 ms fatais.
                 # Reportamos ONDE o tempo foi, para nao ter de adivinhar depois.
@@ -525,8 +646,6 @@ def main():
                           f'(apos o envio anterior: log+impressao {custo_pos:.1f} ms | '
                           f'espera da serial {t_espera:.1f} ms | '
                           f'rede {lat[-1]:.2f} ms)')
-            else:
-                t_prim = t_env
             t_acao = t_env
             t_ult_rl = t_env
             a_ant = a
@@ -563,7 +682,7 @@ def main():
             # Mesmo cuidado da guarda do laco: se o firmware ja saiu do modo
             # binario, estes 7 bytes seriam lidos como 7 teclas. Nesse caso o
             # 's' de texto sozinho ja para tudo.
-            if t_acao is not None and (time.time() - t_acao) <= RL_TIMEOUT_S:
+            if (time.time() - t_acao) <= RL_TIMEOUT_S:
                 p.enviar_acao(0.0, 0, CMD_PARAR)
                 time.sleep(0.05)
             p.texto('s')
@@ -591,6 +710,11 @@ def main():
     print(f'pacotes perdidos = {p.perdidos}')
     if lat:
         print(f'latencia da rede: media {np.mean(lat):.2f} ms, pior {np.max(lat):.2f} ms')
+    print(f'pacotes descartados por CRC = {p.crc_ruim}')
+    if p.bruto:
+        print('\ntodas as linhas de texto do ESP32 durante a sessao:')
+        for ht, tx in p.bruto[-25:]:
+            print(f'  t={ht - t0:7.3f}s  {tx!r}')
     if intervalos:
         iv = np.array(intervalos)
         print(f'intervalo entre acoes: media {iv.mean():.1f} ms, '

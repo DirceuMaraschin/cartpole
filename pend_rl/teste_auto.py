@@ -3,7 +3,7 @@
 ESP32 falso para testar a sequencia automatica SEM bancada.
 
 Reproduz o que importa do firmware:
-  - o watchdog de RL_TIMEOUT_MS = 60 ms (sai do modo RL se a acao nao chegar)
+  - o watchdog de RL_TIMEOUT_MS = 100 ms (sai do modo RL se a acao nao chegar)
   - o comando 'o' como TOGGLE, podendo comecar LIGADO
   - as mensagens de texto com '#' e o modo binario depois do 'r'
   - a flag F_PERDEU quando a acao atrasa
@@ -19,7 +19,7 @@ from rl_bridge import (crc8, CAB_SUBIDA, CAB_DESCIDA, TAM_SUBIDA,
                        F_RL, F_ZERO_OK, F_PERDEU, F_OBSERVA, CMD_PID,
                        ENC_SINAL, CONTAGENS_POR_VOLTA)
 
-RL_TIMEOUT_MS = 60
+RL_TIMEOUT_MS = 100
 DT = 0.020
 
 
@@ -43,6 +43,8 @@ class ESP32Falso(threading.Thread):
         self.observa_no_r = None
         self.capturou_em = None
         self.texto_pos_rl = 0
+        self.supervisor = True
+        self.supervisor_no_r = None
         self.ja_esteve_rl = False
 
     # ---------------- lado de baixo: o que o firmware imprime ----------------
@@ -117,6 +119,9 @@ class ESP32Falso(threading.Thread):
         elif c == 'i':
             self.modo = 'SWING'
             self.capturou_em = time.time() + self.swingup_s
+        elif c == 'm':
+            self.supervisor = not self.supervisor
+            self.diz('Supervisor PID: ' + ('LIGADO' if self.supervisor else 'DESLIGADO'))
         elif c == 'o':
             self.rlObserva = not self.rlObserva
             self.diz('Modo observacao: ' + ('LIGADO (o PID atua, o agente so assiste)'
@@ -128,6 +133,7 @@ class ESP32Falso(threading.Thread):
                 self.ultima_acao = time.time()
                 self.observa_no_r = self.rlObserva
                 self.ja_esteve_rl = True
+                self.supervisor_no_r = self.supervisor
                 self.diz('Entregando ao agente')
             else:
                 self.diz('Aguardando entrega: haste ainda nao estavel')
@@ -167,7 +173,8 @@ class ESP32Falso(threading.Thread):
                 self.pacote(flags)
 
 
-def cenario(nome, observa_inicial, observar_pedido, atraso_abertura_ms=25.0):
+def cenario(nome, observa_inicial, observar_pedido, atraso_abertura_ms=25.0,
+            superv_inicial=True, superv_pedido=True):
     """atraso_abertura_ms: a lacuna REAL entre a sequencia terminar e a primeira
     acao do laco principal -- abrir o CSV, criar a thread do teclado e rodar a
     primeira inferencia. Na bancada de 29/10 essa primeira inferencia custou
@@ -177,6 +184,7 @@ def cenario(nome, observa_inicial, observar_pedido, atraso_abertura_ms=25.0):
     mestre, escravo = pty.openpty()
     os.set_blocking(mestre, False)
     esp = ESP32Falso(mestre, observa_inicial=observa_inicial)
+    esp.supervisor = superv_inicial
     esp.start()
 
     # Num pty a taxa e ficcao: nao existe fio, nenhum bit e temporizado por ela.
@@ -200,7 +208,8 @@ def cenario(nome, observa_inicial, observar_pedido, atraso_abertura_ms=25.0):
     builtins.input = lambda *a, **k: ''
     try:
         passos_rl = 0
-        ok = rl_bridge.sequencia_auto(p, observar=observar_pedido)
+        ok = rl_bridge.sequencia_auto(p, observar=observar_pedido,
+                                      supervisor=superv_pedido)
         if ok:
             time.sleep(atraso_abertura_ms / 1000.0)   # a lacuna do main()
             t0 = time.time()
@@ -219,45 +228,53 @@ def cenario(nome, observa_inicial, observar_pedido, atraso_abertura_ms=25.0):
 
     return dict(nome=nome, ok=ok, obs_no_r=esp.observa_no_r,
                 watchdog=esp.saidas_por_watchdog, acoes=esp.acoes,
-                passos_rl=passos_rl, modo_final=esp.modo)
+                passos_rl=passos_rl, modo_final=esp.modo,
+                superv_no_r=esp.supervisor_no_r)
 
 
 def main():
     print('=== SEQUENCIA AUTOMATICA CONTRA UM ESP32 FALSO ===')
-    print('(inclui o watchdog de 60 ms e o toggle "o")\n')
+    print('(inclui o watchdog de 100 ms e o toggle "o")\n')
 
     casos = [
-        # nome,                              obs ja ligada?, pedimos observar?
-        ('etapa 3, observacao DESLIGADA',     False, True),
-        ('etapa 3, observacao JA LIGADA',     True,  True),   # <- o seu caso
-        ('etapa 4, observacao DESLIGADA',     False, False),
-        ('etapa 4, observacao JA LIGADA',     True,  False),
+        # nome,                         obs ini, obs ped, sup ini, sup ped
+        ('etapa 3, obs DESLIGADA',      False, True,  True,  True),
+        ('etapa 3, obs JA LIGADA',      True,  True,  True,  True),  # seu caso
+        ('etapa 4, obs DESLIGADA',      False, False, True,  True),
+        ('etapa 4, obs JA LIGADA',      True,  False, True,  True),
+        # Etapa 5: o supervisor SO pode ser desligado antes do 'r' -- em modo
+        # RL o firmware nao le texto e o protocolo nao tem comando para ele.
+        ('etapa 5, superv ja LIGADO',   True,  False, True,  False),
+        ('etapa 5, superv ja DESLIG',   False, False, False, False),
+        ('religar superv desligado',    False, True,  False, True),
     ]
 
     linhas = []
-    for nome, ini, ped in casos:
+    for nome, oi, op, si, sp in casos:
         print(f'--- {nome} ---')
-        r = cenario(nome, ini, ped)
-        linhas.append((nome, ped, r))
+        r = cenario(nome, oi, op, superv_inicial=si, superv_pedido=sp)
+        linhas.append((nome, op, sp, r))
         print()
 
     print('=== RESULTADO ===')
-    print(f'{"cenario":34} {"obs no r":>9} {"pedida":>7} '
-          f'{"watchdog":>9} {"passos/s":>9}')
+    print(f'{"cenario":30} {"obs":>6} {"ped":>6} {"sup":>6} {"ped":>6} '
+          f'{"wdog":>5} {"passos/s":>9}')
     todos_ok = True
-    for nome, ped, r in linhas:
+    for nome, op, sp, r in linhas:
         # passos/s: a 50 Hz o esperado e ~50. O log da bancada deu 2.
-        bom = (r['ok'] and r['obs_no_r'] == ped and r['watchdog'] == 0
-               and r['passos_rl'] >= 40)
+        bom = (r['ok'] and r['obs_no_r'] == op and r['superv_no_r'] == sp
+               and r['watchdog'] == 0 and r['passos_rl'] >= 40)
         todos_ok &= bom
-        print(f'{nome:34} {str(r["obs_no_r"]):>9} '
-              f'{str(ped):>7} {r["watchdog"]:>9} {r["passos_rl"]:>9}   '
+        print(f'{nome:30} {str(r["obs_no_r"]):>6} {str(op):>6} '
+              f'{str(r["superv_no_r"]):>6} {str(sp):>6} '
+              f'{r["watchdog"]:>5} {r["passos_rl"]:>9}   '
               f'{"OK" if bom else "FALHOU"}')
 
     print()
     if todos_ok:
-        print('APROVADO: nos 4 cenarios a observacao ficou no estado PEDIDO,')
-        print('o watchdog nunca disparou e a taxa ficou perto de 50 Hz.')
+        print('APROVADO: em todos os cenarios a observacao E o supervisor')
+        print('ficaram no estado PEDIDO, o watchdog nunca disparou e a taxa')
+        print('ficou perto de 50 Hz.')
     else:
         print('REPROVADO: ver a coluna que divergiu.')
         sys.exit(1)

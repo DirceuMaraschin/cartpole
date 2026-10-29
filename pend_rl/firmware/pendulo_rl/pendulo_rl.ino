@@ -163,7 +163,12 @@ const int   RL_DIVISOR     = 20;      // 1000 Hz / 20 = 50 Hz
 // proposito -- o PID recebe a haste ainda recuperavel, com margem ate 35.
 const float LIMITE_RL_GRAUS = 20.0;
 // Watchdog: sem acao valida por este tempo, freia.
-const uint32_t RL_TIMEOUT_MS = 60;    // 3 periodos perdidos
+const uint32_t RL_TIMEOUT_MS = 100;
+// Eram 60 ms (3 ciclos). O lote do USB-serial no macOS produz lacunas de ate
+// 53 ms medidas no relogio do PC, e o transito USB soma por cima -- passavam
+// dos 60 ms aqui e derrubavam o episodio sem nenhuma falha real. 100 ms ainda
+// e menor que o tempo de dobra do erro (105 ms), e com o supervisor ligado
+// quem assume e o PID, que tem 35 graus para recuperar.
 // Limite de posicao do agente (o firmware impoe, o PC nao decide).
 const float X_LIM_RL = 0.24;
 // Quao perto do centro a haste precisa estar para o PID entregar ao agente.

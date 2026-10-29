@@ -21,6 +21,11 @@ class PonteFake(Ponte):
         self.limite_b = limite_b
         self.seq_ant = None
         self.perdidos = 0
+        self.buf = b''
+        self.msgs = []
+        self.bruto = []
+        self.crc_ruim = 0
+        self.verboso = False
 
 
 def firmware_empacota(x_m, v, phi, omega, passos_por_m, limite_b, seq=0, flags=4):

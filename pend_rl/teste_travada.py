@@ -1,4 +1,4 @@
-"""main() real contra o ESP32 falso, com um travamento de 100 ms injetado,
+"""main() real contra o ESP32 falso, com um travamento de 150 ms injetado,
 reproduzindo 29/10. Verifica (a) que a guarda impede bytes-virando-tecla e
 (b) que o relatorio final acusa o ciclo estourado."""
 import os, pty, sys, time, threading, builtins
@@ -13,14 +13,16 @@ esp.start()
 # Travamento disparado por TEMPO (nao por contagem: o aquecimento tambem
 # passa por agir e consumiria o gatilho antes do laco comecar).
 armado = {'v': False, 'usado': False}
-orig = rl_bridge.AtorCritico.agir
-def agir_travando(self, obs, deterministico=False):
+orig = rl_bridge.PoliticaNumpy.agir
+def agir_travando(self, obs):
     if armado['v'] and not armado['usado']:
         armado['usado'] = True
-        print('  [teste] injetando travamento de 100 ms')
-        time.sleep(0.100)
-    return orig(self, obs, deterministico)
-rl_bridge.AtorCritico.agir = agir_travando
+        print('  [teste] injetando travamento de 150 ms')
+        time.sleep(0.150)
+    return orig(self, obs)
+# Precisa ser a PoliticaNumpy: o torch saiu do laco quente, e patchear
+# AtorCritico.agir deixava o travamento sem efeito -- o teste passava vazio.
+rl_bridge.PoliticaNumpy.agir = agir_travando
 
 builtins.input = lambda *a, **k: ''
 # Sob 'timeout' o stdin esta em EOF: a thread real enfileiraria 'q' na hora e

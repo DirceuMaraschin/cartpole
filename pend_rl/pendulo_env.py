@@ -214,10 +214,27 @@ class PenduloInvertido:
         caiu  = abs(psi_v) > PSI_LIM or abs(self.x) > X_LIM
         trunc = self.passos >= self.max_passos
 
+        # Coeficientes revisados em 29/10 a partir da bancada. Os valores
+        # antigos (0.60 / 0.25 / 0.05) produziam, em regime permanente:
+        #   sobrevivencia 1.000 | psi 0.001 | x 0.001 | Delta-a 0.014
+        # ou seja, o agente era pago quase exclusivamente por nao cair, e
+        # tremular nao custava NADA. Resultado medido na bancada: 20,7
+        # inversoes de sinal da aceleracao por segundo e |da|/|a| = 1,14.
+        #
+        # Duas mudancas:
+        #  - Delta-a de 0.05 para 0.50: agora a suavidade pesa ~14% do bonus
+        #    de sobrevivencia no nivel de tremulacao antigo, e o gradiente e
+        #    linear (o quadratico desaparece perto de zero, que e justamente
+        #    onde queremos empurrar).
+        #  - termo LINEAR de posicao: o quadratico torna x pequeno quase
+        #    gratuito, e o agente so reagia quando x ja estava grande --
+        #    quando o limite de velocidade (0,45 m/s) ja impedia recuperar.
+        #    Foi assim que o carrinho fugiu para -233 mm na etapa 8.
         r = (1.0
              - 0.60*(abs(psi_v)/PSI_LIM)**2
              - 0.25*(abs(self.x)/X_LIM)**2
-             - 0.05*abs(self.a_cmd - a_ant)/A_MAX)
+             - 0.15*(abs(self.x)/X_LIM)
+             - 0.50*abs(self.a_cmd - a_ant)/A_MAX)
         if caiu:
             r = -50.0
 
