@@ -67,6 +67,8 @@ class Ponte:
         self.seq_ant = None
         self.perdidos = 0
         self.buf = b''
+        self.msgs = []
+        self.verboso = False
 
     # ------------- cabecalho em texto, antes do modo binario -------------
     def ler_constantes(self, espera=3.0):
@@ -106,7 +108,15 @@ class Ponte:
                 return
             linha, self.buf = self.buf[:iln], self.buf[iln + 1:]
             txt = linha.decode('utf-8', 'replace').strip()
-            if txt:
+            if not txt:
+                continue
+            if txt.startswith('#'):
+                self.msgs.append(txt)
+                print(f'  [esp32] {txt}')
+            elif self.verboso:
+                # Telemetria do firmware (PID/SWING/INDO/ESPERA). Por padrao
+                # fica escondida: a 5 Hz ela inunda o terminal e voce nao
+                # enxerga mais o que digita nem as mensagens que importam.
                 print(f'  [esp32] {txt}')
 
     def ler_estado(self, prazo=0.05):
@@ -170,8 +180,82 @@ class Ponte:
         return obs, x, psi
 
 
+def sequencia_auto(p, observar=True):
+    """Faz z -> i -> espera captura -> centraliza -> o -> r sozinho.
+
+    Digitar comandos enquanto o firmware fala e a receita para errar o tempo.
+    Aqui cada passo espera a RESPOSTA do ESP32 antes do proximo.
+    """
+    def bombear(seg):
+        t0 = time.time()
+        while time.time() - t0 < seg:
+            p.ler_estado(0.02)
+
+    def esperar(trecho, seg, oque):
+        t0 = time.time()
+        while time.time() - t0 < seg:
+            p.ler_estado(0.02)
+            if any(trecho in m for m in p.msgs):
+                p.msgs.clear()
+                return True
+        print(f'  >> TEMPO ESGOTADO esperando: {oque}')
+        return False
+
+    print()
+    print('=== SEQUENCIA AUTOMATICA ===')
+    p.texto('s'); bombear(0.5); p.msgs.clear()
+
+    input('  Deixe a haste PENDURADA e PARADA, depois tecle Enter: ')
+    p.msgs.clear()
+    p.texto('z')
+    if not esperar('Zero definido', 3, 'o zero do encoder'):
+        return False
+    print('  zero definido')
+
+    p.texto('i')
+    print('  swing-up em andamento...')
+    if not esperar('Capturado', 30, 'a captura do pendulo'):
+        print('  >> O swing-up nao capturou. Confira ALVO_EN e o atrito do pivo.')
+        return False
+    print('  capturado; aguardando o carrinho centralizar')
+    bombear(4.0)
+
+    if observar:
+        p.msgs.clear()
+        p.texto('o')
+        if not esperar('observacao', 3, 'a confirmacao do modo observacao'):
+            return False
+        if any('desligado' in m for m in p.msgs):
+            p.msgs.clear(); p.texto('o'); esperar('observacao', 3, 'observacao')
+        print('  modo observacao LIGADO (o PID atua, o agente so assiste)')
+
+    p.msgs.clear()
+    p.texto('r')
+    t0 = time.time()
+    while time.time() - t0 < 15:
+        est = p.ler_estado(0.05)
+        if est and (est['flags'] & F_RL):
+            print('  modo RL ativo -- coletando')
+            print()
+            return True
+    print('  >> O firmware nao entrou no modo RL.')
+    print('     Veja as mensagens "Aguardando entrega" acima: elas dizem o que falta.')
+    return False
+
+
 def ler_teclado(fila):
-    for linha in sys.stdin:
+    """Le comandos do teclado.
+
+    Usa readline() e NAO 'for linha in sys.stdin': o iterador de arquivo faz
+    read-ahead em bloco, e num terminal interativo isso faz a linha digitada
+    ficar presa no buffer ate o bloco encher. O sintoma e exatamente "digitei
+    e nao aconteceu nada".
+    """
+    while True:
+        linha = sys.stdin.readline()
+        if not linha:            # EOF: o terminal fechou
+            fila.put('q')
+            return
         fila.put(linha.strip())
 
 
@@ -184,6 +268,10 @@ def main():
     ap.add_argument('--log', default='')
     ap.add_argument('--malha-aberta', action='store_true',
                     help='calcula a acao mas envia ZERO: testa o laco sem mover o motor')
+    ap.add_argument('--auto', action='store_true',
+                    help='executa z/i/o/r sozinho, esperando a resposta de cada passo')
+    ap.add_argument('--verboso', action='store_true',
+                    help='mostra tambem a telemetria do firmware (inunda o terminal)')
     ap.add_argument('--psi-abortar', type=float, default=18.0,
                     help='graus: acima disso o PC devolve o controle ao PID')
     args = ap.parse_args()
@@ -199,9 +287,22 @@ def main():
     p = Ponte(args.porta, args.baud)
     p.ler_constantes()
 
+    p.verboso = args.verboso
+
+    if args.auto:
+        if not sequencia_auto(p, observar=not args.malha_aberta):
+            print('\nA sequencia nao completou. Nada foi coletado.')
+            try:
+                p.texto('s'); time.sleep(0.1); p.ser.close()
+            except Exception:
+                pass
+            return
+
     fila = queue.Queue()
     threading.Thread(target=ler_teclado, args=(fila,), daemon=True).start()
-    print('\nDigite r + ENTER para entregar o controle ao agente. q encerra.\n')
+    if not args.auto:
+        print('\nComandos no proprio terminal (tecla + ENTER): z i o r s q')
+        print('A telemetria do firmware esta escondida; use --verboso para ve-la.\n')
 
     esc = None
     if args.log:

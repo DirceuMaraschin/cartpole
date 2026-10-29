@@ -91,8 +91,17 @@ o que você quiser, e dá para comparar as duas decisões no mesmo estado.
 ```bash
 source .venv/bin/activate
 python rl_bridge.py --porta /dev/cu.usbserial-0001 --modelo modelos/melhor.pt \
-       --log logs/observa_01.csv
+       --log logs/observa_01.csv --auto
 ```
+
+Com `--auto` a ponte executa a sequência sozinha, esperando a resposta do ESP32
+a cada passo. A única coisa que ela pede é que você confirme, com Enter, que a
+haste está pendurada e parada — o resto é automático.
+
+> **Por que automatizar.** Digitar comandos enquanto o firmware fala pela mesma
+> porta é a receita para errar o tempo: a telemetria rola na tela e você não vê
+> mais o que digitou. A telemetria agora fica escondida por padrão (`--verboso`
+> mostra), e `--auto` tira a digitação da equação.
 
 > **O Monitor Serial fica FECHADO durante todo o teste.** No macOS a porta é
 > exclusiva: ou a IDE a usa, ou a ponte. Você digita os comandos no mesmo
