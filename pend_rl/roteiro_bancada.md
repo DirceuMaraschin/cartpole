@@ -94,7 +94,19 @@ python rl_bridge.py --porta /dev/cu.usbserial-0001 --modelo modelos/melhor.pt \
        --log logs/observa_01.csv
 ```
 
+> **O Monitor Serial fica FECHADO durante todo o teste.** No macOS a porta é
+> exclusiva: ou a IDE a usa, ou a ponte. Você digita os comandos no mesmo
+> terminal onde a ponte está rodando, seguidos de Enter, e ela repassa ao
+> ESP32. As respostas do firmware aparecem prefixadas com `[esp32]`.
+
+**Antes:** confirme que o firmware tem o modo de observação — com a ponte
+rodando, digite `o` e veja se volta `[esp32] # Modo observacao: LIGADO`. Se
+voltar a lista de comandos, o firmware é antigo: recompile. Digite `o` de novo
+para desligar antes de seguir.
+
 No terminal: `z` → `i` → espere capturar e centralizar → `o` → `r`.
+
+A ordem importa: o `o` vem **antes** do `r`.
 
 A cada segundo aparece uma linha assim:
 

@@ -66,6 +66,7 @@ class Ponte:
         self.limite_b = 0
         self.seq_ant = None
         self.perdidos = 0
+        self.buf = b''
 
     # ------------- cabecalho em texto, antes do modo binario -------------
     def ler_constantes(self, espera=3.0):
@@ -89,26 +90,57 @@ class Ponte:
         print(f'>> passos_por_m={self.passos_por_m:.0f}  limite_b={self.limite_b}')
 
     # ------------------------- protocolo binario -------------------------
+    def _mostrar_texto(self):
+        """Imprime as linhas de texto do firmware que estao no buffer.
+
+        O firmware so fala binario depois do comando r. Antes disso ele manda
+        telemetria e mensagens ("# Capturado!", "# Modo observacao: LIGADO")
+        que o operador PRECISA ver para saber quando apertar a proxima tecla.
+        Sem isso voce digita as sequencia no escuro.
+        """
+        while b'\n' in self.buf:
+            # nao engole um pacote binario que comece antes da quebra de linha
+            iq = self.buf.find(CAB_SUBIDA)
+            iln = self.buf.find(b'\n')
+            if 0 <= iq < iln:
+                return
+            linha, self.buf = self.buf[:iln], self.buf[iln + 1:]
+            txt = linha.decode('utf-8', 'replace').strip()
+            if txt:
+                print(f'  [esp32] {txt}')
+
     def ler_estado(self, prazo=0.05):
-        """Le um pacote de estado. Devolve None se nao vier nada valido."""
+        """Le um pacote de estado. Devolve None se nao vier nada valido.
+
+        O buffer e persistente entre chamadas: um pacote pode chegar partido
+        em duas leituras, e descartar o buffer perderia metade dele.
+        """
         t0 = time.time()
-        buf = b''
         while time.time() - t0 < prazo:
             n = self.ser.in_waiting
             if n:
-                buf += self.ser.read(n)
-            i = buf.find(CAB_SUBIDA)
-            if i >= 0 and len(buf) - i >= TAM_SUBIDA:
-                p = buf[i:i + TAM_SUBIDA]
+                self.buf += self.ser.read(n)
+            i = self.buf.find(CAB_SUBIDA)
+            if i >= 0 and len(self.buf) - i >= TAM_SUBIDA:
+                if i > 0:
+                    self._mostrar_texto()
+                    i = self.buf.find(CAB_SUBIDA)
+                    if i < 0 or len(self.buf) - i < TAM_SUBIDA:
+                        continue
+                p = self.buf[i:i + TAM_SUBIDA]
                 if crc8(p[:20]) != p[20]:
-                    buf = buf[i + 2:]
+                    self.buf = self.buf[i + 2:]
                     continue
+                self.buf = self.buf[i + TAM_SUBIDA:]
                 _, seq, pos, enc, v, om, flags, _ = struct.unpack(FMT_SUBIDA, p)
                 if self.seq_ant is not None:
                     falta = (seq - self.seq_ant - 1) & 0xFF
                     self.perdidos += falta
                 self.seq_ant = seq
                 return dict(seq=seq, pos=pos, enc=enc, v=v, omega=om, flags=flags)
+            self._mostrar_texto()
+            if len(self.buf) > 4096:        # nao deixa o buffer crescer sem fim
+                self.buf = self.buf[-512:]
             time.sleep(0.0005)
         return None
 
