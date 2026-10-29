@@ -108,27 +108,45 @@ haste está pendurada e parada — o resto é automático.
 > terminal onde a ponte está rodando, seguidos de Enter, e ela repassa ao
 > ESP32. As respostas do firmware aparecem prefixadas com `[esp32]`.
 
-**Antes:** confirme que o firmware tem o modo de observação — com a ponte
-rodando, digite `o` e veja se volta `[esp32] # Modo observacao: LIGADO`. Se
-voltar a lista de comandos, o firmware é antigo: recompile. Digite `o` de novo
-para desligar antes de seguir.
+**Não toque no `o` manualmente.** A ponte cuida dele: o `o` do firmware é um
+*toggle*, então ela lê a resposta e insiste até o firmware confirmar
+`LIGADO`. Depois do `r` ela ainda confere a flag `F_OBSERVA` no pacote e
+**aborta** se o estado não for o pedido. Mexer no `o` por fora só atrapalha
+essa conferência.
 
-No terminal: `z` → `i` → espere capturar e centralizar → `o` → `r`.
+Você só faz duas coisas: teclar Enter quando ela pedir (haste pendurada e
+parada) e `q` ao terminar.
 
-A ordem importa: o `o` vem **antes** do `r`.
+Antes de ir para a bancada, rode a rede de proteção, que não precisa de
+hardware nenhum:
+
+```bash
+python teste_auto.py
+```
+
+Ela sobe um ESP32 falso — com o watchdog de 60 ms e o toggle do `o` — e exige
+que, nos 4 cenários, a observação termine no estado pedido e a taxa fique
+perto de 50 Hz.
 
 A cada segundo aparece uma linha assim:
 
 ```
-  312 passos | psi  0.31deg | x   +7.2mm | a  +0.42 | perdidos 0 | rede 0.21ms
+  >> modo RL: OBSERVACAO, quem atua e o PID
+  312 passos | psi  0.31deg | x   +7.2mm | a  +0.42 | perdidos 0 | rede 0.12ms
       | OBSERVA: PID +0.38 agente +0.42, mesmo sinal  94%
 ```
 
 - [ ] **Aprovação:**
+  - a linha `>> modo RL:` diz **OBSERVACAO, quem atua e o PID**
   - taxa próxima de **50 Hz** (o contador sobe ~50 por segundo)
   - **perdidos = 0** ou pouquíssimos
-  - **latência da rede < 2 ms**
+  - **latência da rede < 1 ms** (a rede é aquecida na partida)
   - **mesmo sinal acima de 60%** e correlação acima de 0,3 no resumo final
+
+> **Se parar em poucos passos.** Foi o watchdog de 60 ms: alguma coisa no PC
+> travou o laço e a ação não chegou. Procure a flag `16` (`F_PERDEU`) somada
+> na coluna `flags` do CSV — `52` = 32+16+4 significa "estou em RL, zerado, e
+> perdi a ação anterior". Foi exatamente o que aconteceu em 29/10.
 
 > **O que esse teste pega.** Se a convenção de ângulo, a direção do motor ou o
 > `ENC_SINAL` estiverem invertidos em algum ponto da cadeia, o agente decidirá
@@ -144,16 +162,18 @@ Deixe rodar uns 30 segundos e encerre com `q`.
 Mão na chave de emergência. Alguém pronto para segurar a haste.
 
 ```bash
-python rl_bridge.py --porta /dev/cu.usbserial-0001 \
-    --modelo modelos/melhor.pt --segundos 30 --log logs/rl_01.csv
+python rl_bridge.py --porta /dev/cu.usbserial-0001 --modelo modelos/melhor.pt \
+       --segundos 30 --log logs/rl_01.csv --auto --sem-observacao
 ```
 
-Sequência: `z` → `i` → espere capturar e centralizar → **`o` se ainda estiver
-ligado, para DESLIGAR a observação** → `r`.
+O `--sem-observacao` é o que muda a etapa 3 para a etapa 4: é ele que tira o
+PID do comando. A ponte avisa na partida, em letras maiúsculas, que o agente
+vai mover o carrinho de verdade — e, como na etapa 3, ela confere a flag
+`F_OBSERVA` depois do `r` e aborta se o estado não for o pedido.
 
-> Confira a mensagem: deve dizer "Modo observacao: desligado (o AGENTE atua)".
-> Se ficar ligado, o PID continua no comando e você vai achar que o agente está
-> funcionando quando não está.
+> Confira a linha `>> modo RL:`. Ela deve dizer **o AGENTE esta no comando**.
+> Se disser OBSERVACAO, o PID continua no comando e você vai achar que o
+> agente está funcionando quando não está.
 
 O firmware só entrega ao agente quando a haste estiver **estável**:
 |ψ| < 3°, |ψ̇| < 0,5 rad/s e |x| < 120 mm. Entregar um pêndulo já caindo seria

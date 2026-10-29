@@ -10,9 +10,14 @@ Uso:
     python rl_bridge.py --porta COM5 --segundos 30 --log logs/rl_01.csv
 
 Teclas durante a execucao (digite + ENTER):
-    r  entrega o controle ao agente       p  devolve ao PID
+    r  entrega o controle ao agente       o  liga/desliga o modo observacao
+    i  swing-up + PID                    z  define o zero do encoder
     s  parar                              q  encerrar
     v  limitador de velocidade            m  liga/desliga supervisor
+    p  mostra posicao e angulo            k  mostra as constantes
+
+Para devolver o controle ao PID nao existe tecla: a ponte manda CMD_PID pelo
+protocolo binario (e o que a protecao de |psi| faz automaticamente).
 """
 
 import argparse, csv, os, queue, struct, sys, threading, time
@@ -25,6 +30,13 @@ except ImportError:
 
 from ppo import AtorCritico
 import torch
+
+# Uma rede 2x64 e minuscula: o calculo em si leva ~0,1 ms. Com os 4 threads
+# padrao, o custo de acordar e sincronizar a equipe de threads e MAIOR que a
+# conta, e a latencia medida saltou para 2 ms de media com picos acima de 700 ms
+# na primeira chamada. Um thread so, aqui, e mais rapido -- e, o que importa
+# mais num laco de 20 ms, e previsivel.
+torch.set_num_threads(1)
 
 # --- constantes que DEVEM bater com pendulo_env.py ---
 X_LIM    = 0.24
@@ -192,14 +204,22 @@ def sequencia_auto(p, observar=True):
             p.ler_estado(0.02)
 
     def esperar(trecho, seg, oque):
+        """Espera uma mensagem do firmware. Devolve o TEXTO casado, ou None.
+
+        Esta funcao NAO limpa p.msgs. Ela limpava, e isso causou um bug real:
+        quem chamava precisava ler o texto para saber QUAL foi o resultado
+        (o comando 'o' responde "LIGADO" ou "desligado"), mas encontrava a
+        lista ja vazia e seguia adiante achando que estava tudo certo.
+        Quem chama limpa antes de enviar o comando.
+        """
         t0 = time.time()
         while time.time() - t0 < seg:
             p.ler_estado(0.02)
-            if any(trecho in m for m in p.msgs):
-                p.msgs.clear()
-                return True
+            for m in p.msgs:
+                if trecho in m:
+                    return m
         print(f'  >> TEMPO ESGOTADO esperando: {oque}')
-        return False
+        return None
 
     print()
     print('=== SEQUENCIA AUTOMATICA ===')
@@ -208,36 +228,72 @@ def sequencia_auto(p, observar=True):
     input('  Deixe a haste PENDURADA e PARADA, depois tecle Enter: ')
     p.msgs.clear()
     p.texto('z')
-    if not esperar('Zero definido', 3, 'o zero do encoder'):
+    if esperar('Zero definido', 3, 'o zero do encoder') is None:
         return False
     print('  zero definido')
 
+    p.msgs.clear()
     p.texto('i')
     print('  swing-up em andamento...')
-    if not esperar('Capturado', 30, 'a captura do pendulo'):
+    if esperar('Capturado', 30, 'a captura do pendulo') is None:
         print('  >> O swing-up nao capturou. Confira ALVO_EN e o atrito do pivo.')
         return False
     print('  capturado; aguardando o carrinho centralizar')
     bombear(4.0)
 
-    if observar:
+    # O 'o' e um TOGGLE, nao um "ligar". Se a observacao ja estava ligada de um
+    # teste manual anterior, este 'o' a DESLIGA -- e o agente passaria a comandar
+    # o carrinho de verdade sem ninguem pedir. Por isso lemos a resposta e
+    # insistimos ate o firmware confirmar o estado que queremos.
+    for tentativa in range(3):
         p.msgs.clear()
         p.texto('o')
-        if not esperar('observacao', 3, 'a confirmacao do modo observacao'):
+        m = esperar('observacao', 3, 'a confirmacao do modo observacao')
+        if m is None:
+            print('  >> O firmware nao respondeu ao "o".')
+            print('     Provavelmente e uma versao antiga: recompile pendulo_rl.ino.')
             return False
-        if any('desligado' in m for m in p.msgs):
-            p.msgs.clear(); p.texto('o'); esperar('observacao', 3, 'observacao')
-        print('  modo observacao LIGADO (o PID atua, o agente so assiste)')
+        ligado = 'desl' not in m.lower()      # "LIGADO" x "desligado"
+        if ligado == observar:
+            break
+        print(f'  o toggle caiu no estado errado ({"ligado" if ligado else "desligado"}); '
+              f'reenviando')
+    else:
+        print('  >> Nao consegui deixar o modo observacao no estado pedido.')
+        return False
+    print(f'  modo observacao {"LIGADO (o PID atua, o agente so assiste)" if observar else "DESLIGADO (o agente atua)"}')
 
     p.msgs.clear()
     p.texto('r')
     t0 = time.time()
     while time.time() - t0 < 15:
         est = p.ler_estado(0.05)
-        if est and (est['flags'] & F_RL):
-            print('  modo RL ativo -- coletando')
+        if est is None:
+            continue
+        # RESPONDE a cada pacote. O firmware desarma em RL_TIMEOUT_MS = 60 ms
+        # sem receber acao e devolve o controle ao PID. Este laco antes so LIA,
+        # entao o watchdog disparava depois de ~3 pacotes: era exatamente o
+        # "2 passos em 64,9 s" com F_PERDEU aceso no log.
+        p.enviar_acao(0.0, est['seq'])
+        if not (est['flags'] & F_RL):
+            continue
+
+        obs_fw = bool(est['flags'] & F_OBSERVA)
+        if obs_fw != observar:
             print()
-            return True
+            print(f'  >> ABORTANDO: pedi observacao={observar}, mas o firmware '
+                  f'entrou com observacao={obs_fw}.')
+            if observar:
+                print('     O AGENTE comandaria o carrinho. Isso e a Etapa 4, nao a 3.')
+            else:
+                print('     O PID atuaria e voce acharia que o agente funciona.')
+            p.enviar_acao(0.0, est['seq'], CMD_PID)
+            return False
+
+        print(f'  modo RL ativo, {"OBSERVACAO (quem atua e o PID)" if obs_fw else "o AGENTE atua"}'
+              f' -- coletando')
+        print()
+        return True
     print('  >> O firmware nao entrou no modo RL.')
     print('     Veja as mensagens "Aguardando entrega" acima: elas dizem o que falta.')
     return False
@@ -270,6 +326,9 @@ def main():
                     help='calcula a acao mas envia ZERO: testa o laco sem mover o motor')
     ap.add_argument('--auto', action='store_true',
                     help='executa z/i/o/r sozinho, esperando a resposta de cada passo')
+    ap.add_argument('--sem-observacao', action='store_true',
+                    help='etapa 4+: o AGENTE atua de verdade (sem isso, o PID '
+                         'segura a haste e o agente so assiste)')
     ap.add_argument('--verboso', action='store_true',
                     help='mostra tambem a telemetria do firmware (inunda o terminal)')
     ap.add_argument('--psi-abortar', type=float, default=18.0,
@@ -280,30 +339,35 @@ def main():
     rede.load_state_dict(torch.load(args.modelo, map_location='cpu',
                                     weights_only=True)['rede'])
     rede.eval()
+
+    # Aquece a rede ANTES do laco. A primeira inferencia do torch paga a
+    # alocacao de buffers e a escolha de kernels: medimos 737 ms nela. No meio
+    # do laco de 20 ms isso estoura o watchdog de 60 ms do firmware e derruba
+    # o episodio. Aqui, custa nada.
+    _aq = np.zeros(5, dtype=np.float32)
+    for _ in range(50):
+        rede.agir(_aq, deterministico=True)
+    _t = time.perf_counter()
+    for _ in range(100):
+        rede.agir(_aq, deterministico=True)
     print(f'Modelo carregado: {args.modelo}')
+    print(f'Rede aquecida: {(time.perf_counter()-_t)*10:.2f} ms por inferencia '
+          f'(orcamento do laco: 20 ms)')
     if args.malha_aberta:
         print('*** MALHA ABERTA: o motor NAO sera comandado pelo agente ***')
+    elif args.sem_observacao:
+        print('*** O AGENTE VAI COMANDAR O CARRINHO DE VERDADE ***')
+        print('    Mao na chave de emergencia. Alguem pronto para segurar a haste.')
 
     p = Ponte(args.porta, args.baud)
     p.ler_constantes()
 
     p.verboso = args.verboso
 
-    if args.auto:
-        if not sequencia_auto(p, observar=not args.malha_aberta):
-            print('\nA sequencia nao completou. Nada foi coletado.')
-            try:
-                p.texto('s'); time.sleep(0.1); p.ser.close()
-            except Exception:
-                pass
-            return
-
-    fila = queue.Queue()
-    threading.Thread(target=ler_teclado, args=(fila,), daemon=True).start()
-    if not args.auto:
-        print('\nComandos no proprio terminal (tecla + ENTER): z i o r s q')
-        print('A telemetria do firmware esta escondida; use --verboso para ve-la.\n')
-
+    # Abrir o arquivo ANTES da entrega. I/O entre a entrega e a primeira acao
+    # consome parte dos 60 ms do watchdog, e esse orcamento pertence ao laco,
+    # nao a burocracia. A thread do teclado NAO pode vir para ca: ela le
+    # sys.stdin, e sequencia_auto usa input() -- as duas disputariam o Enter.
     esc = None
     if args.log:
         os.makedirs(os.path.dirname(os.path.abspath(args.log)), exist_ok=True)
@@ -311,6 +375,27 @@ def main():
         esc = csv.writer(f)
         esc.writerow(['t_s', 'x_m', 'v_ms', 'psi_rad', 'psiDot_rads',
                       'a_ms2', 'flags', 'seq'])
+
+    # Em malha aberta a acao enviada e sempre zero, entao o PID TEM de segurar a
+    # haste: sem observacao o pendulo simplesmente cairia e nao haveria o que ver.
+    observar = not args.sem_observacao or args.malha_aberta
+    if args.auto:
+        if not sequencia_auto(p, observar=observar):
+            print('\nA sequencia nao completou. Nada foi coletado.')
+            try:
+                p.texto('s'); time.sleep(0.1); p.ser.close()
+            except Exception:
+                pass
+            if esc:
+                f.close()
+            return
+    else:
+        print('\nComandos no proprio terminal (tecla + ENTER): z i o r s q')
+        print('A telemetria do firmware esta escondida; use --verboso para ve-la.\n')
+
+    # Agora sim: a sequencia (e o input() dela) terminou, o stdin esta livre.
+    fila = queue.Queue()
+    threading.Thread(target=ler_teclado, args=(fila,), daemon=True).start()
 
     a_ant = 0.0
     n = 0
@@ -320,6 +405,7 @@ def main():
     psis = []
     comp = []
     em_rl = False
+    mudos = 0
 
     try:
         while True:
@@ -334,16 +420,31 @@ def main():
             est = p.ler_estado()
             if est is None:
                 if em_rl:
-                    print('  !! sem pacotes do ESP32')
+                    mudos += 1
+                    if mudos == 1:
+                        print('  !! sem pacotes do ESP32')
+                    elif mudos == 10:
+                        print('     O firmware parou de falar binario, ou seja: saiu do')
+                        print('     modo RL. Causa quase sempre o watchdog de 60 ms --')
+                        print('     alguma coisa travou o laco e a acao nao chegou a tempo.')
+                        print('     Confira a flag F_PERDEU (16) no log e tecle q.')
                 time.sleep(0.01)
                 continue
+            mudos = 0
 
             agora = time.time()
-            em_rl = bool(est['flags'] & F_RL)
+            era_rl, em_rl = em_rl, bool(est['flags'] & F_RL)
             if not em_rl:
                 # firmware ainda em PID/homing: so acompanha
                 time.sleep(0.002)
                 continue
+
+            if not era_rl:
+                # Entrou no modo RL agora. Diz em voz alta quem esta atuando:
+                # confundir os dois e acreditar que o agente funciona quando era
+                # o PID segurando a haste o tempo todo.
+                print('  >> modo RL: ' + ('OBSERVACAO, quem atua e o PID'
+                      if est['flags'] & F_OBSERVA else 'o AGENTE esta no comando'))
 
             obs, x, psi = p.observar(est, a_ant)
 
