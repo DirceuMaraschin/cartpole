@@ -759,6 +759,13 @@ void controle(float dt) {
         break;
       }
 
+      // Quem esta atuando precisa ser dito ANTES de enviarEstado(flags).
+      // Estava depois: o bit era aceso num 'flags' local que ja havia sido
+      // transmitido e seria zerado no ciclo seguinte, entao F_OBSERVA NUNCA
+      // saiu do ESP32 -- o PC nao tinha como saber se quem comandava o
+      // carrinho era o PID ou o agente. Achado em 29/10.
+      if (rlObserva) flags |= F_OBSERVA;
+
       // --- fronteira de 20 ms: publica estado e troca a acao ---
       if (++rlCont >= RL_DIVISOR) {
         rlCont = 0;
@@ -772,7 +779,6 @@ void controle(float dt) {
       }
 
       if (rlObserva) {
-        flags |= F_OBSERVA;
         a = acaoPID(psi, psiDot, x, dt);   // o PID segura; o agente so assiste
         calculouPID = true;
       } else {
@@ -834,7 +840,12 @@ void imprimirConstantes() {
   Serial.printf("# a_bal_max=%.2f\n", A_BAL_MAX);
   Serial.printf("# rl_hz=%d limite_rl_graus=%.1f timeout_ms=%u\n",
                 1000 / RL_DIVISOR, LIMITE_RL_GRAUS, (unsigned)RL_TIMEOUT_MS);
+  Serial.printf("# kx=%.1f (ganho de posicao, comando x)\n", KX);
+  Serial.printf("# x_entrega_rl=%.3f m (quao perto do centro p/ entregar ao agente)\n",
+                X_ENTREGA_RL);
   Serial.printf("# supervisor=%s\n", supervisorLigado ? "LIGADO" : "desligado");
+  Serial.printf("# modo_observacao=%s\n",
+                rlObserva ? "LIGADO (no modo RL o PID atua)" : "desligado (o AGENTE atua)");
   Serial.println("# psi = wrap(pi - phi)   psiDot = -omega");
 }
 

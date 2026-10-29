@@ -20,7 +20,7 @@ Para devolver o controle ao PID nao existe tecla: a ponte manda CMD_PID pelo
 protocolo binario (e o que a protecao de |psi| faz automaticamente).
 """
 
-import argparse, csv, os, queue, struct, sys, threading, time
+import argparse, csv, gc, os, queue, struct, sys, threading, time
 import numpy as np
 
 try:
@@ -53,6 +53,10 @@ FMT_SUBIDA  = '<HBiiffBB'      # 21 bytes
 TAM_SUBIDA  = 21
 
 CMD_NADA, CMD_PARAR, CMD_PID, CMD_RL = 0, 1, 2, 3
+
+# Tem de bater com RL_TIMEOUT_MS do firmware. Passado esse tempo sem receber
+# acao, o ESP32 devolve o controle ao PID E SAI DO MODO BINARIO.
+RL_TIMEOUT_S = 0.060
 F_FC_A, F_FC_B, F_RL, F_SUPERV, F_PERDEU, F_ZERO_OK, F_OBSERVA = 1, 2, 4, 8, 16, 32, 64
 
 
@@ -353,6 +357,14 @@ def main():
     print(f'Modelo carregado: {args.modelo}')
     print(f'Rede aquecida: {(time.perf_counter()-_t)*10:.2f} ms por inferencia '
           f'(orcamento do laco: 20 ms)')
+
+    # Uma coleta de geracao 2 com o torch carregado pode parar o processo por
+    # dezenas de ms -- e 60 ms derruba o episodio. gc.freeze() move tudo o que
+    # ja existe (o modelo, os modulos) para uma geracao permanente que o
+    # coletor nao reexamina, e os limiares altos tornam as coletas raras.
+    gc.collect()
+    gc.freeze()
+    gc.set_threshold(100_000, 1_000, 1_000)
     if args.malha_aberta:
         print('*** MALHA ABERTA: o motor NAO sera comandado pelo agente ***')
     elif args.sem_observacao:
@@ -406,6 +418,12 @@ def main():
     comp = []
     em_rl = False
     mudos = 0
+    t_acao = None       # instante do ultimo envio: e o relogio do watchdog
+    intervalos = []     # intervalos entre envios, em ms
+    custo_pos = 0.0     # ms gastos em log+impressao DEPOIS do envio anterior
+    t_espera = 0.0      # ms esperando a serial nesta iteracao
+    t_prim = None       # instante do primeiro pacote em modo RL
+    t_ult_rl = None     # instante do ultimo pacote em modo RL
 
     try:
         while True:
@@ -417,7 +435,9 @@ def main():
                     p.texto(c[0])
                     print(f'  [enviado: {c[0]}]')
 
+            t_ler0 = time.time()
             est = p.ler_estado()
+            t_espera = (time.time() - t_ler0) * 1000
             if est is None:
                 if em_rl:
                     mudos += 1
@@ -471,7 +491,44 @@ def main():
                 cmd = CMD_PID
                 print(f'  >> PC abortando: psi = {np.degrees(psi):.1f} graus')
 
+            # Se passou mais que o watchdog desde a nossa ultima acao, o
+            # firmware JA saiu do modo RL -- e com ele do modo binario. Mandar
+            # os 7 bytes agora e pior que nao mandar: em modo texto ele le cada
+            # byte como uma TECLA. Em 29/10 tres pacotes atrasados viraram um
+            # 'Z' e 18 "comando desconhecido"; um byte igual a 'a', 'b' ou 'i'
+            # teria mandado o carrinho andar sozinho.
+            # Relogio lido AGORA, nao o 'agora' da leitura do pacote: um
+            # travamento na inferencia acontece DEPOIS daquele instante e
+            # passaria batido. Foi assim que a guarda falhou no primeiro teste.
+            t_pre = time.time()
+            if t_acao is not None and (t_pre - t_acao) > RL_TIMEOUT_S:
+                print(f'  !! lacuna de {(t_pre - t_acao)*1000:.0f} ms desde a ultima '
+                      f'acao: o firmware ja estourou o watchdog.')
+                print('     NAO vou responder a este pacote -- os bytes seriam lidos')
+                print('     como teclas. Tecle q e veja o relatorio de ciclos abaixo.')
+                # Registra o intervalo mesmo sem enviar: senao o resumo final
+                # diria "0 ciclos acima do watchdog" num episodio que ele
+                # derrubou. t_acao fica como esta, para a guarda seguir valendo
+                # nos proximos pacotes da fila.
+                intervalos.append((t_pre - t_acao) * 1000)
+                em_rl = False
+                continue
+
             p.enviar_acao(0.0 if args.malha_aberta else a, est['seq'], cmd)
+            t_env = time.time()
+            if t_acao is not None:
+                intervalos.append((t_env - t_acao) * 1000)
+                # Um intervalo acima de 40 ms e a antessala dos 60 ms fatais.
+                # Reportamos ONDE o tempo foi, para nao ter de adivinhar depois.
+                if intervalos[-1] > 40:
+                    print(f'  !! intervalo entre acoes de {intervalos[-1]:.0f} ms  '
+                          f'(apos o envio anterior: log+impressao {custo_pos:.1f} ms | '
+                          f'espera da serial {t_espera:.1f} ms | '
+                          f'rede {lat[-1]:.2f} ms)')
+            else:
+                t_prim = t_env
+            t_acao = t_env
+            t_ult_rl = t_env
             a_ant = a
             n += 1
             psis.append(abs(np.degrees(psi)))
@@ -492,6 +549,10 @@ def main():
                       f'x {x*1000:+6.1f}mm | a {a:+6.2f} | '
                       f'perdidos {p.perdidos} | rede {np.mean(lat[-50:]):.2f}ms{extra}')
 
+            # Tudo o que vem depois do envio rouba do orcamento do PROXIMO
+            # ciclo, entao medimos esse custo para saber se foi ele que travou.
+            custo_pos = (time.time() - t_env) * 1000
+
             if args.segundos and (agora - t0) >= args.segundos:
                 break
 
@@ -499,8 +560,12 @@ def main():
         print('\nEncerrando...')
     finally:
         try:
-            p.enviar_acao(0.0, 0, CMD_PARAR)
-            time.sleep(0.05)
+            # Mesmo cuidado da guarda do laco: se o firmware ja saiu do modo
+            # binario, estes 7 bytes seriam lidos como 7 teclas. Nesse caso o
+            # 's' de texto sozinho ja para tudo.
+            if t_acao is not None and (time.time() - t_acao) <= RL_TIMEOUT_S:
+                p.enviar_acao(0.0, 0, CMD_PARAR)
+                time.sleep(0.05)
             p.texto('s')
             time.sleep(0.05)
             p.ser.close()
@@ -509,13 +574,34 @@ def main():
         if esc:
             f.close()
 
-    dur = time.time() - t0
-    print(f'\n{n} passos em {dur:.1f} s  ({n/max(dur,1e-9):.1f} Hz)')
+    # A taxa precisa ser medida sobre a JANELA EM MODO RL, nao sobre o tempo de
+    # parede. Dividir pelo tempo total inclui a espera ate voce teclar q e
+    # subestima a taxa: em 29/10 isso reportou 37,4 Hz onde foram 49,7 Hz.
+    dur_total = time.time() - t0
+    dur_rl = (t_ult_rl - t_prim) if (t_prim and t_ult_rl and t_ult_rl > t_prim) else 0.0
+    if dur_rl > 0:
+        print(f'\n{n} passos em {dur_rl:.1f} s de modo RL  ({n/dur_rl:.1f} Hz)')
+    else:
+        print(f'\n{n} passos (modo RL curto demais para medir a taxa)')
+    if dur_total - dur_rl > 1.0:
+        print(f'  (o processo ficou aberto {dur_total:.1f} s; '
+              f'{dur_total-dur_rl:.1f} s fora do modo RL nao contam na taxa)')
     if psis:
         print(f'|psi| medio = {np.mean(psis):.2f} graus   maximo = {np.max(psis):.2f}')
     print(f'pacotes perdidos = {p.perdidos}')
     if lat:
         print(f'latencia da rede: media {np.mean(lat):.2f} ms, pior {np.max(lat):.2f} ms')
+    if intervalos:
+        iv = np.array(intervalos)
+        print(f'intervalo entre acoes: media {iv.mean():.1f} ms, '
+              f'p99 {np.percentile(iv,99):.1f} ms, pior {iv.max():.1f} ms')
+        acima = int((iv > RL_TIMEOUT_S*1000).sum())
+        print(f'  ciclos acima do watchdog de {RL_TIMEOUT_S*1000:.0f} ms: {acima}')
+        if acima:
+            print('  >> Cada um desses derruba o episodio. Veja as linhas "!! intervalo"')
+            print('     acima: elas dizem se o tempo foi em log+impressao ou na serial.')
+        piores = np.sort(iv)[-5:][::-1]
+        print('  5 piores: ' + ', '.join(f'{v:.0f}' for v in piores) + ' ms')
     if comp:
         ag, pi = np.array(comp).T
         iguais = 100.0 * np.mean(np.sign(ag) == np.sign(pi))

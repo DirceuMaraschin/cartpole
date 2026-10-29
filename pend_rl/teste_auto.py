@@ -16,7 +16,8 @@ import os, pty, struct, sys, threading, time
 import numpy as np
 
 from rl_bridge import (crc8, CAB_SUBIDA, CAB_DESCIDA, TAM_SUBIDA,
-                       F_RL, F_ZERO_OK, F_PERDEU, F_OBSERVA, CMD_PID)
+                       F_RL, F_ZERO_OK, F_PERDEU, F_OBSERVA, CMD_PID,
+                       ENC_SINAL, CONTAGENS_POR_VOLTA)
 
 RL_TIMEOUT_MS = 60
 DT = 0.020
@@ -41,6 +42,8 @@ class ESP32Falso(threading.Thread):
         self.saidas_por_watchdog = 0
         self.observa_no_r = None
         self.capturou_em = None
+        self.texto_pos_rl = 0
+        self.ja_esteve_rl = False
 
     # ---------------- lado de baixo: o que o firmware imprime ----------------
     def diz(self, txt):
@@ -49,7 +52,9 @@ class ESP32Falso(threading.Thread):
     def pacote(self, flags):
         x, phi, v, om = 0.0279, np.pi - 0.0026, 0.02, 0.0
         pos = int(round(x * 40000 + 21485 / 2))
-        enc = int(round(-(phi - np.pi) / (2 * np.pi / 2400)))
+        # phi e medido do PENDURADO (=0); em pe vale pi. Estava errado aqui e
+        # entregava psi = -179.9 graus ao agente.
+        enc = int(round(phi / (2 * np.pi / CONTAGENS_POR_VOLTA) / ENC_SINAL))
         p = bytearray(CAB_SUBIDA)
         p.append(self.seq & 0xFF)
         p += struct.pack('<i', pos) + struct.pack('<i', enc)
@@ -64,6 +69,14 @@ class ESP32Falso(threading.Thread):
         try:
             self.buf += os.read(self.fd, 4096)
         except (BlockingIOError, OSError):
+            return
+        if not self.binario:
+            # FORA do modo binario o firmware le cada byte como uma TECLA.
+            # E o que transforma um pacote de acao atrasado em comandos: na
+            # bancada de 29/10, 21 bytes viraram um 'Z' e 18 "desconhecido".
+            for c in self.buf:
+                self.comando(chr(c))
+            self.buf = b''
             return
         while self.buf:
             i = self.buf.find(CAB_DESCIDA)
@@ -92,6 +105,10 @@ class ESP32Falso(threading.Thread):
     def comando(self, c):
         if c in '\r\n ':
             return
+        if self.ja_esteve_rl and self.modo != 'RL' and c != 's':
+            # byte de acao lido como TECLA: foi isso que gerou o 'Z' e os 18
+            # "comando desconhecido" na bancada em 29/10
+            self.texto_pos_rl += 1
         if c == 'k':
             os.write(self.fd, b'passos_por_m=40000\ncurso_passos=21485\n')
         elif c == 'z':
@@ -110,6 +127,7 @@ class ESP32Falso(threading.Thread):
                 self.binario = True
                 self.ultima_acao = time.time()
                 self.observa_no_r = self.rlObserva
+                self.ja_esteve_rl = True
                 self.diz('Entregando ao agente')
             else:
                 self.diz('Aguardando entrega: haste ainda nao estavel')
@@ -161,7 +179,20 @@ def cenario(nome, observa_inicial, observar_pedido, atraso_abertura_ms=25.0):
     esp = ESP32Falso(mestre, observa_inicial=observa_inicial)
     esp.start()
 
-    p = rl_bridge.Ponte(os.ttyname(escravo), 921600)
+    # Num pty a taxa e ficcao: nao existe fio, nenhum bit e temporizado por ela.
+    # E no macOS pedir 921600 QUEBRA: por nao ser uma taxa padiao, o pyserial
+    # recorre ao ioctl IOSSIOSPEED, que so existe para portas seriais de
+    # verdade -- "OSError 25: Inappropriate ioctl for device". Usamos uma taxa
+    # padrao aqui; na bancada a porta e real e os 921600 valem normalmente.
+    p = None
+    for baud in (115200, 9600):
+        try:
+            p = rl_bridge.Ponte(os.ttyname(escravo), baud)
+            break
+        except OSError:
+            continue
+    if p is None:
+        raise RuntimeError('nao consegui abrir o pty em nenhuma taxa padrao')
     p.ler_constantes(espera=1.0)
 
     import builtins

@@ -136,12 +136,29 @@ A cada segundo aparece uma linha assim:
       | OBSERVA: PID +0.38 agente +0.42, mesmo sinal  94%
 ```
 
-- [ ] **Aprovação:**
-  - a linha `>> modo RL:` diz **OBSERVACAO, quem atua e o PID**
-  - taxa próxima de **50 Hz** (o contador sobe ~50 por segundo)
-  - **perdidos = 0** ou pouquíssimos
-  - **latência da rede < 1 ms** (a rede é aquecida na partida)
-  - **mesmo sinal acima de 60%** e correlação acima de 0,3 no resumo final
+- [x] **APROVADO em 29/10** (`logs/observa_02.csv`, 76 s, 3780 passos):
+
+  | Critério | Meta | Medido |
+  |---|---|---|
+  | taxa | ~50 Hz | **49,7 Hz** |
+  | perdidos | 0 | **0** |
+  | latência da rede | < 1 ms | **0,61 ms** (pior 7,68) |
+  | mesmo sinal | > 60% | **80%** |
+  | correlação | > 0,3 | **+0,916** |
+  | ⟨\|ψ\|⟩ | — | **0,19°** (máx 0,60°) |
+
+  A correlação de +0,916 é o resultado que libera a etapa seguinte: não há
+  sinal invertido em `ENC_SINAL`, em ψ nem na direção do motor.
+
+  **Por que o agente pede mais que o PID** (+0,83 contra +0,10 m/s² de média):
+  o carrinho ficou parado em +66 mm, e o agente é ~6× mais agressivo em
+  centralizar que o PID com `KX=5,0`. Medido no simulador, no estado real da
+  bancada: a 66 mm ele pede +1,95 m/s²; no centro, −0,02. O offset do encoder
+  (−0,19°) responde por apenas −0,25 m/s² disso. Não é defeito — é a
+  recompensa de posição fazendo o seu trabalho. É também o que explica
+  correlação +0,92 com "mesmo sinal" de só 80%: o PID oscila em torno de zero
+  enquanto o agente fica firmemente positivo, então o *sinal* discorda sem que
+  as *decisões* discordem.
 
 > **Se parar em poucos passos.** Foi o watchdog de 60 ms: alguma coisa no PC
 > travou o laço e a ação não chegou. Procure a flag `16` (`F_PERDEU`) somada
@@ -156,6 +173,28 @@ A cada segundo aparece uma linha assim:
 > seguinte custa a haste.
 
 Deixe rodar uns 30 segundos e encerre com `q`.
+
+### Os três bugs que a etapa 3 revelou (29/10)
+
+Valem registro porque dois eram antigos e invisíveis.
+
+1. **`F_OBSERVA` nunca saía do ESP32.** No firmware, `flags |= F_OBSERVA` vinha
+   *depois* de `enviarEstado(flags)`: o bit era aceso num `flags` local já
+   transmitido e zerado no ciclo seguinte. Estava assim desde sempre, e nunca
+   apareceu porque nada conferia a flag. Corrigido movendo a linha para antes
+   do envio.
+2. **A sequência automática não alimentava o watchdog.** O laço pós-`r` lia
+   pacotes para confirmar `F_RL` sem nunca responder, e o firmware voltava ao
+   PID em 60 ms. Sintoma: 2 passos em 64,9 s.
+3. **Pacote velho respondido = comando digitado.** Fora do modo binário o
+   firmware lê *cada byte* como tecla. Três pacotes atrasados viraram um `Z` e
+   18 "comando desconhecido". Deu em mensagens inofensivas por sorte — um byte
+   igual a `a`, `b` ou `i` manda o carrinho andar. A ponte agora checa o
+   relógio antes de enviar e se cala se passou dos 60 ms.
+
+Dois testes sem hardware guardam isso: `teste_auto.py` (os 4 cenários do
+toggle) e `teste_travada.py` (injeta um travamento de 100 ms e exige zero
+bytes-virando-tecla).
 
 ## Etapa 4 — Primeiro episódio real
 
@@ -181,6 +220,16 @@ preparar o agente para falhar.
 
 - [ ] **Aprovação:** o agente segura a haste por pelo menos 10 s sem o supervisor
       intervir.
+
+**Previsão, medida no simulador com o estado real da bancada:** o agente puxa o
+carrinho dos ~66 mm de volta ao centro com cerca de +2 m/s² e para em torno de
+**7 mm**. Com o agente no comando, o offset do encoder deixa de custar 66 mm de
+curso e passa a custar 7. Se em vez disso ele **derivar até a parede**, aí sim
+o offset é o culpado: refaça o `z` com a haste bem parada.
+
+Confira também o resumo final: `ciclos acima do watchdog de 60 ms` deve ser
+**0**. Se não for, as linhas `!! intervalo` dizem se o tempo foi em
+log+impressão, na espera da serial ou na rede.
 
 **O que pode acontecer e o que significa:**
 
