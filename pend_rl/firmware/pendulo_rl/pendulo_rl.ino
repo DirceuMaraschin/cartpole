@@ -450,6 +450,7 @@ const uint8_t F_SUPERV   = 0x08;   // supervisor PID assumiu neste ciclo
 const uint8_t F_PERDEU   = 0x10;   // pacote anterior nao chegou a tempo
 const uint8_t F_ZERO_OK  = 0x20;   // encoder ja foi zerado
 const uint8_t F_OBSERVA  = 0x40;   // modo RL em observacao: quem atua e o PID
+const uint8_t F_COMPLETO = 0x80;   // agente faz swing-up E equilibrio (comando g)
 
 // comandos da descida
 const uint8_t CMD_NADA    = 0;
@@ -547,6 +548,12 @@ bool rlAposCaptura = false;        // 'r': ao capturar, entrega ao agente
 // importa -- o SINAL da acao. Com o PID segurando, o teste dura o que voce
 // quiser e ainda da para comparar as duas decisoes lado a lado.
 bool rlObserva = false;
+// Modo AGENTE COMPLETO (comando g): o agente faz o swing-up TAMBEM, partindo
+// da haste pendurada. Exige desligar o supervisor de angulo -- ele dispara em
+// 20 graus e durante o swing-up |psi| vale 180 na maior parte do tempo.
+// A protecao passa a ser trilho, velocidade, aceleracao e fins de curso, todas
+// por saturacao e portanto inescapaveis pelo agente.
+bool rlCompleto = false;
 float termoI = 0;
 uint32_t chegouCentroEm = 0;
 
@@ -591,7 +598,7 @@ void tratarComandoRL(uint8_t cmd) {
   switch (cmd) {
     case CMD_PARAR:
       modo = PARADO; aposCentro = PARADO; termoI = 0;
-      modoBinario = false;
+      modoBinario = false; rlCompleto = false;
       break;
     case CMD_PID:
       if (modo == RL) sairRLparaPID("pedido do PC");
@@ -746,20 +753,35 @@ void controle(float dt) {
       float psiDot = -omega;
       flags |= F_RL;
 
-      // --- SUPERVISOR: o PID retoma antes de ser tarde ---
-      if (supervisorLigado && fabsf(psi) > LIMITE_RL_GRAUS * PI / 180.0f) {
+      if (rlCompleto) flags |= F_COMPLETO;
+
+      // --- SUPERVISOR DE ANGULO: o PID retoma antes de ser tarde ---
+      // Nao vale no modo completo: ali |psi| passa por 180 graus a cada
+      // swing-up, e o supervisor dispararia no primeiro ciclo.
+      if (supervisorLigado && !rlCompleto
+          && fabsf(psi) > LIMITE_RL_GRAUS * PI / 180.0f) {
         sairRLparaPID("angulo acima do limite do agente");
         break;
       }
+      // O trilho vale SEMPRE. No modo completo nao da para devolver ao PID:
+      // ele nao sabe capturar uma haste que pode estar pendurada, e tentar
+      // seria pior que parar.
       if (fabsf(x) > X_LIM_RL) {
-        sairRLparaPID("carrinho fora da faixa util");
+        if (rlCompleto) {
+          modo = PARADO; modoBinario = false; rlCompleto = false;
+          aplicarVelocidade(0);
+          Serial.println("# RL completo: carrinho fora da faixa util. Parado.");
+        } else {
+          sairRLparaPID("carrinho fora da faixa util");
+        }
         break;
       }
 
       // --- WATCHDOG: o PC sumiu ---
       if ((uint32_t)(millis() - ultimaAcaoMs) > RL_TIMEOUT_MS) {
-        if (supervisorLigado) sairRLparaPID("comunicacao perdida");
-        else { modo = PARADO; modoBinario = false;
+        if (supervisorLigado && !rlCompleto) sairRLparaPID("comunicacao perdida");
+        else { modo = PARADO; modoBinario = false; rlCompleto = false;
+               aplicarVelocidade(0);
                Serial.println("# RL: comunicacao perdida. Parado."); }
         break;
       }
@@ -849,6 +871,8 @@ void imprimirConstantes() {
   Serial.printf("# x_entrega_rl=%.3f m (quao perto do centro p/ entregar ao agente)\n",
                 X_ENTREGA_RL);
   Serial.printf("# supervisor=%s\n", supervisorLigado ? "LIGADO" : "desligado");
+  Serial.printf("# modo_completo=%s (comando g: agente faz o swing-up)\n",
+                rlCompleto ? "LIGADO" : "desligado");
   Serial.printf("# modo_observacao=%s\n",
                 rlObserva ? "LIGADO (no modo RL o PID atua)" : "desligado (o AGENTE atua)");
   Serial.println("# psi = wrap(pi - phi)   psiDot = -omega");
@@ -882,9 +906,33 @@ void tratarComando(char c) {
       }
       break;
 
+    case 'g':
+      // AGENTE COMPLETO: ele faz o swing-up partindo da haste pendurada.
+      if (!zeroDefinido) { Serial.println("# Envie z primeiro."); break; }
+      if (modo == RL) { Serial.println("# Ja esta no modo RL."); break; }
+      if (modo != PARADO || fabsf(vMs) > 0.001f) {
+        Serial.println("# Pare com s antes."); break;
+      }
+      if (fabsf((posicao - limiteB / 2) / passosPorM) > X_ENTREGA_RL) {
+        Serial.printf("# Centralize primeiro (comando c): |x|=%.0fmm, "
+                      "maximo %.0fmm\n",
+                      1000 * fabsf((posicao - limiteB / 2) / passosPorM),
+                      1000 * X_ENTREGA_RL);
+        break;
+      }
+      iniciarHistorico(); termoI = 0;
+      rlCompleto = true;
+      rlObserva  = false;   // observacao nao faz sentido: o PID nao sobe a haste
+      entrarRL();
+      Serial.println("# AGENTE COMPLETO: ele faz o swing-up e o equilibrio.");
+      Serial.println("# Supervisor de angulo DESLIGADO (passaria por 180 graus).");
+      Serial.println("# Protecao ativa: trilho, velocidade, aceleracao, fins de curso.");
+      Serial.println("# Deixe a haste PENDURADA e LIVRE. Mao na chave de emergencia.");
+      break;
+
     case 's':
       modo = PARADO; aposCentro = PARADO; termoI = 0;
-      rlAposCaptura = false; modoBinario = false;
+      rlAposCaptura = false; modoBinario = false; rlCompleto = false;
       Serial.println("# Parando.");
       break;
 
@@ -945,7 +993,8 @@ void tratarComando(char c) {
     case 'k': imprimirConstantes(); break;
     case '\n': case '\r': case ' ': break;
     default:
-      Serial.println("# i e r s a b c z p k | m=supervisor v=limite RL d=telemetria x=KX o=observa");
+      Serial.println("# i e r s g a b c z p k | m=supervisor v=limite RL d=telemetria x=KX o=observa");
+      Serial.println("# g = AGENTE COMPLETO (ele faz o swing-up, sem PID)");
   }
 }
 

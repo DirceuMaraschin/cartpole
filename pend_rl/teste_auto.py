@@ -16,8 +16,8 @@ import os, pty, struct, sys, threading, time
 import numpy as np
 
 from rl_bridge import (crc8, CAB_SUBIDA, CAB_DESCIDA, TAM_SUBIDA,
-                       F_RL, F_ZERO_OK, F_PERDEU, F_OBSERVA, CMD_PID,
-                       ENC_SINAL, CONTAGENS_POR_VOLTA)
+                       F_RL, F_ZERO_OK, F_PERDEU, F_OBSERVA, F_COMPLETO,
+                       CMD_PID, ENC_SINAL, CONTAGENS_POR_VOLTA)
 
 RL_TIMEOUT_MS = 100
 DT = 0.020
@@ -45,6 +45,8 @@ class ESP32Falso(threading.Thread):
         self.texto_pos_rl = 0
         self.supervisor = True
         self.supervisor_no_r = None
+        self.completo = False
+        self.completo_no_g = None
         self.ja_esteve_rl = False
 
     # ---------------- lado de baixo: o que o firmware imprime ----------------
@@ -119,6 +121,20 @@ class ESP32Falso(threading.Thread):
         elif c == 'i':
             self.modo = 'SWING'
             self.capturou_em = time.time() + self.swingup_s
+        elif c == 'g':
+            # Agente completo: entra em RL direto, sem passar pelo PID.
+            if self.modo in ('PARADO', 'PID'):
+                self.modo = 'RL'; self.binario = True
+                self.completo = True; self.rlObserva = False
+                self.ultima_acao = time.time()
+                self.ja_esteve_rl = True
+                self.completo_no_g = True
+                self.observa_no_r = False
+                self.diz('AGENTE COMPLETO: ele faz o swing-up e o equilibrio.')
+            else:
+                self.diz('Pare com s antes.')
+        elif c == 'c':
+            self.diz('Chegou.')
         elif c == 'm':
             self.supervisor = not self.supervisor
             self.diz('Supervisor PID: ' + ('LIGADO' if self.supervisor else 'DESLIGADO'))
@@ -140,6 +156,7 @@ class ESP32Falso(threading.Thread):
         elif c == 's':
             self.modo = 'PID'
             self.binario = False
+            self.completo = False
 
     def run(self):
         prox = time.time()
@@ -165,6 +182,8 @@ class ESP32Falso(threading.Thread):
             flags = F_ZERO_OK if self.zerado else 0
             if self.modo == 'RL':
                 flags |= F_RL
+                if self.completo:
+                    flags |= F_COMPLETO
                 if self.rlObserva:
                     flags |= F_OBSERVA
                 if atraso > DT * 1000 * 1.5:

@@ -58,6 +58,11 @@ CMD_NADA, CMD_PARAR, CMD_PID, CMD_RL = 0, 1, 2, 3
 # acao, o ESP32 devolve o controle ao PID E SAI DO MODO BINARIO.
 RL_TIMEOUT_S = 0.100
 F_FC_A, F_FC_B, F_RL, F_SUPERV, F_PERDEU, F_ZERO_OK, F_OBSERVA = 1, 2, 4, 8, 16, 32, 64
+F_COMPLETO = 128     # agente faz swing-up E equilibrio (comando g do firmware)
+
+# Escalas do agente COMPLETO (pendulo_env_sw.py). Diferem das de cima porque
+# o problema e outro: a rotacao inteira em vez de +-35 graus.
+PSID_ESC_SW = 15.0   # rad/s; o swing-up passa pelo fundo a 13,5
 
 
 def crc8(dados):
@@ -100,9 +105,50 @@ class PoliticaNumpy:
         return h @ self.W[2] + self.b[2]
 
 
+def _abrir_porta(porta, baud):
+    """Abre a serial e, se falhar, diz o que fazer em vez de despejar um traceback.
+
+    O erro mais comum na bancada nao e o codigo: e a porta presa por outro
+    processo (tipicamente o Monitor Serial da IDE, que fica aberto depois de
+    gravar) ou um descritor obsoleto depois de reconectar o cabo.
+    """
+    try:
+        return serial.Serial(porta, baud, timeout=0.05)
+    except Exception as e:
+        print()
+        print(f'ERRO ao abrir {porta} a {baud} baud:')
+        print(f'  {type(e).__name__}: {e}')
+        print()
+        existe = os.path.exists(porta)
+        if not existe:
+            print(f'  A porta {porta} NAO EXISTE.')
+            try:
+                import glob as _g
+                cand = sorted(_g.glob('/dev/cu.usb*') + _g.glob('/dev/ttyUSB*')
+                              + _g.glob('/dev/ttyACM*'))
+            except Exception:
+                cand = []
+            if cand:
+                print('  Portas disponiveis agora: ' + ', '.join(cand))
+                print(f'  Rode de novo com --porta {cand[0]}')
+            else:
+                print('  Nenhuma porta serial encontrada: confira o cabo USB.')
+        else:
+            print('  A porta existe, mas nao aceitou a configuracao. Em ordem:')
+            print('   1. FECHE o Monitor Serial da Arduino IDE (fica aberto')
+            print('      depois de gravar e segura a porta com exclusividade).')
+            print(f'   2. Veja quem a segura:  lsof {porta}')
+            print('   3. Sobrou processo anterior?  pgrep -af rl_bridge')
+            print('   4. Desconecte e reconecte o cabo USB: limpa o estado do')
+            print('      driver, que e a causa de "Invalid argument" depois de')
+            print('      uma gravacao ou de um encerramento abrupto.')
+        print()
+        raise SystemExit(1)
+
+
 class Ponte:
     def __init__(self, porta, baud=921600):
-        self.ser = serial.Serial(porta, baud, timeout=0.05)
+        self.ser = _abrir_porta(porta, baud)
         time.sleep(2.0)
         self.ser.reset_input_buffer()
         self.passos_por_m = 40000.0
@@ -223,6 +269,25 @@ class Ponte:
 
     def texto(self, c):
         self.ser.write(c.encode()[:1])
+
+    # --------------------- observacao do agente COMPLETO ---------------
+    def observar_sw(self, est, a_ant):
+        """6 entradas, com sin/cos do angulo: cobre a rotacao inteira.
+
+        Tem de bater EXATAMENTE com PenduloSwingUp._observar(). A ordem e as
+        escalas sao parte do contrato com a rede treinada -- trocar duas
+        entradas de lugar nao da erro, da um agente que decide ao contrario.
+        """
+        x = (est['pos'] - self.limite_b / 2) / self.passos_por_m
+        phi = ENC_SINAL * est['enc'] * (2 * np.pi / CONTAGENS_POR_VOLTA)
+        psi = wrap(np.pi - phi)
+        obs = np.array([x / X_LIM,
+                        est['v'] / V_MAX,
+                        np.sin(psi),
+                        np.cos(psi),
+                        -est['omega'] / PSID_ESC_SW,
+                        a_ant / A_MAX], dtype=np.float32)
+        return obs, x, psi
 
     # --------------------------- observacao ---------------------------
     def observar(self, est, a_ant):
@@ -366,6 +431,79 @@ def sequencia_auto(p, observar=True, supervisor=True):
     return False
 
 
+def sequencia_completa(p):
+    """s -> z -> c (se preciso) -> g.  O agente faz o swing-up.
+
+    Nao ha 'i' aqui: o PID nao entra em momento nenhum. Nao ha 'o' tambem --
+    observacao nao faz sentido quando o PID nao sabe subir a haste.
+    """
+    def bombear(seg):
+        t0 = time.time()
+        while time.time() - t0 < seg:
+            p.ler_estado(0.02)
+
+    def esperar(trecho, seg, oque):
+        t0 = time.time()
+        while time.time() - t0 < seg:
+            p.ler_estado(0.02)
+            for m in p.msgs:
+                if trecho in m:
+                    return m
+        print(f'  >> TEMPO ESGOTADO esperando: {oque}')
+        return None
+
+    print()
+    print('=== SEQUENCIA DO AGENTE COMPLETO ===')
+    p.texto('s'); bombear(0.5); p.msgs.clear()
+
+    input('  Deixe a haste PENDURADA e PARADA, depois tecle Enter: ')
+    p.msgs.clear()
+    p.texto('z')
+    if esperar('Zero definido', 3, 'o zero do encoder') is None:
+        return False
+    print('  zero definido')
+
+    # O firmware exige |x| < X_ENTREGA_RL para aceitar o 'g'. Centraliza antes
+    # para nao depender de onde o carrinho parou.
+    p.msgs.clear()
+    p.texto('c')
+    print('  centralizando...')
+    bombear(6.0)
+
+    p.msgs.clear()
+    p.texto('s'); bombear(0.5)
+    p.msgs.clear()
+    p.texto('g')
+    m = esperar('AGENTE COMPLETO', 3, 'a confirmacao do modo completo')
+    if m is None:
+        print('  >> O firmware nao respondeu ao "g".')
+        print('     Firmware antigo: recompile pendulo_rl.ino.')
+        for mm in p.msgs:
+            print(f'     [esp32] {mm}')
+        return False
+
+    t0 = time.time()
+    while time.time() - t0 < 15:
+        est = p.ler_estado(0.05)
+        if est is None:
+            continue
+        p.enviar_acao(0.0, est['seq'])      # alimenta o watchdog
+        if not (est['flags'] & F_RL):
+            continue
+        if not (est['flags'] & F_COMPLETO):
+            print()
+            print('  >> ABORTANDO: entrou em modo RL mas SEM o bit F_COMPLETO.')
+            print('     O supervisor de angulo estaria ativo e dispararia no')
+            print('     primeiro swing-up. Firmware desatualizado.')
+            p.enviar_acao(0.0, est['seq'], CMD_PARAR)
+            return False
+        print('  modo RL COMPLETO ativo -- o agente faz o swing-up')
+        print()
+        return True
+    print('  >> O firmware nao entrou no modo RL.')
+    return False
+
+
 def ler_teclado(fila):
     """Le comandos do teclado.
 
@@ -396,6 +534,9 @@ def main():
     ap.add_argument('--sem-observacao', action='store_true',
                     help='etapa 4+: o AGENTE atua de verdade (sem isso, o PID '
                          'segura a haste e o agente so assiste)')
+    ap.add_argument('--completo', action='store_true',
+                    help='agente COMPLETO: ele faz o swing-up tambem (6 entradas, '
+                         'comando g). Use com modelos_sw/melhor.pt')
     ap.add_argument('--sem-supervisor', action='store_true',
                     help='etapa 5: desliga o supervisor PID ANTES da entrega. '
                          'Em modo RL isso nao pode ser mudado -- o firmware nao '
@@ -406,7 +547,9 @@ def main():
                     help='graus: acima disso o PC devolve o controle ao PID')
     args = ap.parse_args()
 
-    rede = AtorCritico(dim_obs=5, dim_acao=1)
+    # O agente completo ve 6 entradas (sin/cos do angulo); o de equilibrio, 5.
+    dim = 6 if args.completo else 5
+    rede = AtorCritico(dim_obs=dim, dim_acao=1)
     rede.load_state_dict(torch.load(args.modelo, map_location='cpu',
                                     weights_only=True)['rede'])
     rede.eval()
@@ -416,7 +559,7 @@ def main():
     rng = np.random.default_rng(0)
     pior = 0.0
     for _ in range(2000):
-        o = rng.uniform(-1.5, 1.5, 5).astype(np.float32)
+        o = rng.uniform(-1.5, 1.5, dim).astype(np.float32)
         at, _, _ = rede.agir(o, deterministico=True)
         pior = max(pior, abs(float(at[0]) - float(pol.agir(o)[0])))
     if pior > 1e-4:
@@ -427,7 +570,7 @@ def main():
     # alocacao de buffers e a escolha de kernels: medimos 737 ms nela. No meio
     # do laco de 20 ms isso estoura o watchdog de 60 ms do firmware e derruba
     # o episodio. Aqui, custa nada.
-    _aq = np.zeros(5, dtype=np.float32)
+    _aq = np.zeros(dim, dtype=np.float32)
     for _ in range(50):
         pol.agir(_aq)
     _t = time.perf_counter()
@@ -444,6 +587,12 @@ def main():
     gc.collect()
     gc.freeze()
     gc.set_threshold(100_000, 1_000, 1_000)
+    if args.completo:
+        print('*** AGENTE COMPLETO: ele faz o SWING-UP e o equilibrio ***')
+        print('    Nao ha PID em momento nenhum. O supervisor de angulo fica')
+        print('    DESLIGADO (passaria por 180 graus a cada subida).')
+        print('    Protecao: trilho, velocidade, aceleracao e fins de curso.')
+        print('    Mao na chave de emergencia. A haste vai girar.')
     if args.malha_aberta:
         print('*** MALHA ABERTA: o motor NAO sera comandado pelo agente ***')
     elif args.sem_observacao:
@@ -475,7 +624,17 @@ def main():
     # Em malha aberta a acao enviada e sempre zero, entao o PID TEM de segurar a
     # haste: sem observacao o pendulo simplesmente cairia e nao haveria o que ver.
     observar = not args.sem_observacao or args.malha_aberta
-    if args.auto:
+    if args.auto and args.completo:
+        if not sequencia_completa(p):
+            print('\nA sequencia nao completou. Nada foi coletado.')
+            try:
+                p.texto('s'); time.sleep(0.1); p.ser.close()
+            except Exception:
+                pass
+            if esc:
+                f.close()
+            return
+    elif args.auto:
         if not sequencia_auto(p, observar=observar,
                               supervisor=not args.sem_supervisor):
             print('\nA sequencia nao completou. Nada foi coletado.')
@@ -584,7 +743,10 @@ def main():
                 print('  >> modo RL: ' + ('OBSERVACAO, quem atua e o PID'
                       if est['flags'] & F_OBSERVA else 'o AGENTE esta no comando'))
 
-            obs, x, psi = p.observar(est, a_ant)
+            if args.completo:
+                obs, x, psi = p.observar_sw(est, a_ant)
+            else:
+                obs, x, psi = p.observar(est, a_ant)
 
             # --- rede neural ---
             ti = time.time()
@@ -606,7 +768,15 @@ def main():
             # --- protecao do lado do PC (a 3a camada; o firmware tem as outras) ---
             cmd = cmd_pend
             cmd_pend = CMD_NADA
-            if abs(np.degrees(psi)) > args.psi_abortar:
+            # A protecao de angulo do PC NAO vale para o agente completo: ali
+            # |psi| passa por 180 graus a cada swing-up, e abortar seria
+            # abortar o proprio comportamento desejado. Sobra a de posicao,
+            # que vale sempre -- e o firmware tem o trilho por saturacao.
+            if args.completo:
+                if abs(x) > 0.235:
+                    cmd = CMD_PARAR
+                    print(f'  >> PC abortando: x = {x*1000:.0f} mm')
+            elif abs(np.degrees(psi)) > args.psi_abortar:
                 cmd = CMD_PID
                 print(f'  >> PC abortando: psi = {np.degrees(psi):.1f} graus')
 
@@ -664,6 +834,9 @@ def main():
                     ag, pi = np.array(comp[-50:]).T
                     iguais = 100.0 * np.mean(np.sign(ag) == np.sign(pi))
                     extra = f' | OBSERVA: PID {pi.mean():+5.2f} agente {ag.mean():+5.2f}, mesmo sinal {iguais:3.0f}%'
+                if args.completo:
+                    alt = (1 + np.cos(psi)) / 2
+                    extra = f' | altura {alt:4.2f}' + extra
                 print(f'  {n:6d} passos | psi {np.mean(psis[-50:]):5.2f}deg | '
                       f'x {x*1000:+6.1f}mm | a {a:+6.2f} | '
                       f'perdidos {p.perdidos} | rede {np.mean(lat[-50:]):.2f}ms{extra}')
