@@ -36,6 +36,21 @@
 #include <math.h>
 
 // ===================== PINOS =====================
+// Dois alvos de placa. O ESP32-S3 NAO tem os GPIO 22 a 25, e os 26 a 32 sao o
+// barramento da flash SPI: NENHUM pino do ESP32 classico sobrevive a migracao.
+// GPIO 33 e 34 nao saem nos headers do DevKitC-1, e o 19 e USB D- do conector
+// nativo. Os sete escolhidos para o S3 sao consecutivos no header J1
+// (4, 5, 6, 7, 15, 16, 17), o que permite um unico cabo de fita.
+// Nenhum deles e strapping (0, 3, 45, 46), UART0 (43, 44) nem o LED RGB (38).
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+const int PIN_STEP  = 4;
+const int PIN_DIR   = 5;
+const int PIN_EN    = 6;
+const int PIN_FC_A  = 7;
+const int PIN_FC_B  = 15;
+const int PIN_ENC_A = 16;
+const int PIN_ENC_B = 17;
+#else
 const int PIN_STEP  = 25;
 const int PIN_DIR   = 26;
 const int PIN_EN    = 27;
@@ -43,6 +58,7 @@ const int PIN_FC_A  = 32;
 const int PIN_FC_B  = 33;
 const int PIN_ENC_A = 18;
 const int PIN_ENC_B = 19;
+#endif
 
 // ===================== CONFIGURAÇÃO BÁSICA =====================
 const int ACIONADO   = HIGH;   // fim de curso NF: acionado = HIGH

@@ -42,6 +42,75 @@ Essa concordância é o resultado central do projeto, e vem da identificação d
 | Haste | 255 mm do eixo do encoder à ponta, \~42 g, massa concentrada na ponta |
 | Trilho | 600 mm de vão livre entre as chaves; carrinho de 65,5 mm |
 
+### Ligações
+
+&#91;embedded content: ligações · GPIO conforme firmware/pendulo\_rl.ino\]
+
+Duas escolhas de ligação importam para a segurança:
+
+- **Os fins de curso são normalmente fechados.** Acionado é `HIGH`, ou seja, contato **aberto**. Um fio solto produz o mesmo sinal de uma chave acionada e para o carrinho — falha para o lado seguro. O custo é que um fio solto parece um defeito de lógica, e foi exatamente o que aconteceu uma vez na bancada.
+- **Os dois canais do encoder entram por interrupção em `CHANGE`**, decodificados por tabela de quadratura. É o que dá as 2400 contagens por volta a partir de um encoder de 600 pulsos.
+
+Uma terceira, de menor peso: o `nENBL` do DRV8825 é ativo-baixo **com pull-down interno**, então enquanto o GPIO do EN flutua — entre ligar a alimentação e o `setup()` rodar — o driver fica habilitado e as bobinas energizadas. STEP e DIR também têm pull-down interno, logo não há pulsos espúrios: o motor trava, não anda. Um pull-up de 10 k do EN para 3,3 V deixaria o driver desligado até o firmware assumir. No S3 a janela é um pouco maior, porque a enumeração USB atrasa o boot.
+
+### Migração para o ESP32-S3 DevKitC-1 N8R2
+
+**Nenhum dos sete pinos sobrevive à troca de placa.** As restrições do S3, conferidas no guia oficial da Espressif:
+
+| Faixa | Situação |
+| --- | --- |
+| GPIO 22–25 | **não existem** no chip |
+| GPIO 26–32 | barramento da flash SPI |
+| GPIO 33, 34 | não saem nos headers do DevKitC-1 |
+| GPIO 35–37 | livres no N8R2; a reserva vale só para módulos WROOM-2 (N16R8V, N32R8V) |
+| GPIO 19, 20 | USB D− e D+ do conector nativo |
+| GPIO 43, 44 | UART0 |
+| GPIO 0, 3, 45, 46 | strapping |
+| GPIO 38 | LED RGB da placa (v1.1) |
+
+Dos pinos antigos: 25 não existe; 26, 27 e 32 são da flash; 33 não sai no header; 19 é USB D−. Só o 18 seria aproveitável, e separá-lo do par do encoder não ajudaria.
+
+#### Esquema de ligação — ESP32 Dev Module
+
+Em uso até 05/11/2026.
+
+| Sinal | GPIO | Liga em |
+| --- | --- | --- |
+| STEP | 25 | DRV8825 STEP |
+| DIR | 26 | DRV8825 DIR |
+| EN | 27 | DRV8825 nENBL |
+| Fim de curso A | 32 | chave A; outro lado em GND |
+| Fim de curso B | 33 | chave B; outro lado em GND |
+| Encoder A | 18 | encoder canal A |
+| Encoder B | 19 | encoder canal B |
+
+#### Esquema de ligação — ESP32-S3 DevKitC-1 N8R2
+
+Os sete no header **J1**, em posições consecutivas logo abaixo do RST: um único cabo de fita atende todos.
+
+| Sinal | GPIO | Liga em | Observação |
+| --- | --- | --- | --- |
+| STEP | 4 | DRV8825 STEP | pulso gerado por timer a 40 kHz |
+| DIR | 5 | DRV8825 DIR | `LOW` = lado A, `HIGH` = lado B |
+| EN | 6 | DRV8825 nENBL | `LOW` habilita; pull-down interno no driver |
+| Fim de curso A | 7 | chave A; outro lado em GND | NF, `INPUT_PULLUP` |
+| Fim de curso B | 15 | chave B; outro lado em GND | NF, `INPUT_PULLUP` |
+| Encoder A | 16 | encoder canal A | `attachInterrupt` em `CHANGE` |
+| Encoder B | 17 | encoder canal B | pull-up externo de 4,7 k para 3,3 V |
+
+Alimentação inalterada: VMOT do DRV8825 em 24 V, lógica em 3,3 V, **GND comum** entre placa, driver e encoder.
+
+Nenhum dos sete novos é strapping (0, 3, 45, 46), UART0 (43, 44), USB (19, 20) nem o LED RGB (38). O firmware escolhe o conjunto sozinho pela placa, com `#if defined(CONFIG_IDF_TARGET_ESP32S3)`, e o mesmo arquivo compila para as duas — o ramo do ESP32 clássico fica como caminho de volta enquanto a migração não estiver validada.
+
+### O que mais muda com o S3
+
+- **A porta serial troca de nome.** O DevKitC-1 tem dois conectores USB-C. Pelo conector **UART** (ponte USB-serial) a porta continua `/dev/cu.usbserial-*`; pelo conector **USB** nativo ela vira `/dev/cu.usbmodem*`. O parâmetro `--porta` da ponte precisa acompanhar.
+- **O USB nativo pode resolver a latência.** As lacunas de 45 a 53 ms que forçaram o watchdog de 60 para 100 ms vinham do lote da ponte USB-serial. O conector nativo do S3 é CDC direto, sem ponte — vale medir de novo o `intervalo entre acoes` e, se o p99 cair, considerar voltar o watchdog para 60 ms.
+- **Configuração na IDE:** placa `ESP32S3 Dev Module`, Flash 8 MB, PSRAM `QSPI PSRAM`, e `USB CDC On Boot` ligado se usar o conector nativo.
+- **O gerador de pulsos não muda.** O firmware já ramifica entre as APIs de timer do core 2.x e 3.x, e o S3 roda os mesmos 40 kHz.
+
+Antes do primeiro episódio com a placa nova, refaça a **Etapa 0** do roteiro: o controle clássico tem de funcionar como antes. Uma inversão de fio no encoder ou no DIR aparece lá, não depois.
+
 ### A aritmética da transmissão é exata
 
 A conversão de passos para metros não foi medida, foi calculada:
