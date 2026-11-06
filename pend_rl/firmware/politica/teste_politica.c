@@ -2,7 +2,7 @@
  *
  * Roda o oraculo contra politica.c e reporta o erro maximo.
  *
- *   cc -O2 -Wall -Wextra -o teste_politica teste_politica.c politica.c -lm
+ *   cc -O2 -Wall -Wextra -I../pendulo_rl -o teste_politica teste_politica.c ../pendulo_rl/politica.c -lm
  *   ./teste_politica
  *
  * Com a tabela de tanh:

@@ -19,8 +19,14 @@
  * diferenca E o custo do tanh. A medicao isolada de tanhf() abaixo e so
  * conferencia -- o custo da libm varia com o argumento.
  *
- * ARQUIVOS. politica.c, politica.h e oraculo.h tem de estar nesta pasta. O
- * Arduino compila .c como C e .ino como C++; politica.h ja tem extern "C".
+ * ARQUIVOS. O Arduino so compila o que esta na pasta do sketch, e os pesos
+ * vivem em uma copia so, em firmware/pendulo_rl/. Antes de gravar ESTE
+ * sketch, traga os tres arquivos para ca:
+ *
+ *   cp ../pendulo_rl/politica.c ../pendulo_rl/politica.h ../politica/oraculo.h .
+ *
+ * e apague-os depois, para nao voltarem a divergir. O Arduino compila .c
+ * como C e .ino como C++; politica.h ja tem extern "C".
  *
  * PARA LIGAR A LUT: descomente a linha abaixo E grave de novo.
  */

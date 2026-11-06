@@ -488,11 +488,12 @@ TESTE_C = r"""/* GERADO POR exportar_c.py -- NAO EDITAR A MAO.
  *
  * Roda o oraculo contra politica.c e reporta o erro maximo.
  *
- *   cc -O2 -Wall -Wextra -o teste_politica teste_politica.c politica.c -lm
+ *   cc -O2 -Wall -Wextra -I../pendulo_rl -o teste_politica \
+ *       teste_politica.c ../pendulo_rl/politica.c -lm
  *   ./teste_politica
  *
- * Com a tabela de tanh:
- *   cc -O2 -DPOLITICA_TANH_LUT -o teste_lut teste_politica.c politica.c -lm
+ * Os pesos vivem na pasta do sketch -- uma copia so, a mesma que esta
+ * gravada. Com a tabela de tanh, acrescente -DPOLITICA_TANH_LUT.
  *
  * Critério: erro contra o torch float32 abaixo de 1e-5 é arredondamento.
  * Acima de 1e-3 é bug de indexação ou transposição, não precisão.
@@ -574,12 +575,19 @@ int main(void)
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('modelo', nargs='?', default='modelos_sw/melhor.pt')
-    ap.add_argument('--saida', default='firmware/politica')
+    ap.add_argument('--saida', default='firmware/pendulo_rl',
+                    help='onde vao politica.h e politica.c: a pasta do '
+                         'sketch, para haver UMA copia dos pesos')
+    ap.add_argument('--saida-teste', default='firmware/politica',
+                    help='onde vao oraculo.h e teste_politica.c. Separado '
+                         'porque teste_politica.c tem main() e colidiria '
+                         'com o do core se ficasse na pasta do sketch')
     args = ap.parse_args()
 
     if not os.path.exists(args.modelo):
         raise SystemExit(f'nao achei {args.modelo}')
     os.makedirs(args.saida, exist_ok=True)
+    os.makedirs(args.saida_teste, exist_ok=True)
 
     cam = ler_pesos(args.modelo)
     rede = carregar_torch(args.modelo)
@@ -590,8 +598,8 @@ def main():
 
     obs, ref32, ref64 = gerar_oraculo(rede)
     escrever_oraculo(obs, ref32, ref64,
-                     os.path.join(args.saida, 'oraculo.h'), origem)
-    with open(os.path.join(args.saida, 'teste_politica.c'), 'w') as f:
+                     os.path.join(args.saida_teste, 'oraculo.h'), origem)
+    with open(os.path.join(args.saida_teste, 'teste_politica.c'), 'w') as f:
         f.write(TESTE_C)
 
     macs = sum(W.size for W, _ in cam)
@@ -603,13 +611,17 @@ def main():
     print(f'Oraculo     {len(obs)} vetores | ref f32 e f64')
     print(f'LUT tanh    {LUT_N} intervalos, erro teorico {err_lut:.2e}, '
           f'{4*(LUT_N+1)} bytes')
-    print(f'\nEscrito em {args.saida}/:')
-    for nome in ('politica.h', 'politica.c', 'oraculo.h', 'teste_politica.c'):
-        p = os.path.join(args.saida, nome)
-        print(f'  {nome:18s} {os.path.getsize(p):>7d} bytes')
+    for d, nomes in ((args.saida, ('politica.h', 'politica.c')),
+                     (args.saida_teste, ('oraculo.h', 'teste_politica.c'))):
+        print(f'\nEscrito em {d}/:')
+        for nome in nomes:
+            p = os.path.join(d, nome)
+            print(f'  {nome:18s} {os.path.getsize(p):>7d} bytes')
     print(f'\nValidar:\n'
-          f'  cd {args.saida} && cc -O2 -Wall -Wextra -o teste_politica '
-          f'teste_politica.c politica.c -lm && ./teste_politica')
+          f'  cd {args.saida_teste} && cc -O2 -Wall -Wextra '
+          f'-I../{os.path.basename(args.saida)} -o teste_politica '
+          f'teste_politica.c ../{os.path.basename(args.saida)}/politica.c '
+          f'-lm && ./teste_politica')
 
 
 if __name__ == '__main__':

@@ -36,7 +36,11 @@ import time
 import numpy as np
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
-DIR_C = os.path.join(AQUI, 'firmware', 'politica')
+# A fonte dos pesos e a pasta GRAVADA: uma copia so, sem divergencia
+# possivel entre o que roda na placa e o que o simulador valida.
+DIR_C = os.path.join(AQUI, 'firmware', 'pendulo_rl')
+# O .so vai para a pasta de teste, nao para a do sketch.
+DIR_BUILD = os.path.join(AQUI, 'firmware', 'politica')
 DIM_OBS = 6
 
 _pf = ctypes.POINTER(ctypes.c_float)
@@ -80,7 +84,8 @@ class PoliticaC:
     # ------------------------------------------------------------------
     def _compilar(self, cc, flags, forcar):
         nome = 'libpolitica_lut.so' if self.lut else 'libpolitica.so'
-        destino = os.path.join(self.dir_c, nome)
+        os.makedirs(DIR_BUILD, exist_ok=True)
+        destino = os.path.join(DIR_BUILD, nome)
 
         if not forcar and os.path.exists(destino):
             if os.path.getmtime(destino) > os.path.getmtime(self.fonte):
