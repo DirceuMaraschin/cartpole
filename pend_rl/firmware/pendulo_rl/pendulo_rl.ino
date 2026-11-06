@@ -93,7 +93,7 @@ const int ENC_SINAL = -1;
 // ===================== MECANICA =====================
 // MEDIR: distancia entre os pontos onde os dois fins de curso ACIONAM.
 // Nao e a mesma coisa que "onde o carrinho encosta na chave".
-// Veja o procedimento em identificacao.md secao 6.
+// Veja o procedimento no README.md, secao "Hardware".
 // ESCALA DO TRILHO -- resolvida em 26/10/2026, mantenha em 0.
 //
 // Em 0 o firmware usa 40000 passos/m, que a polia de 20 dentes torna EXATO:

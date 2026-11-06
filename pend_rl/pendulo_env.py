@@ -2,7 +2,7 @@
 Ambiente de simulação do pêndulo invertido físico (ESP32 + NEMA17 + GT2 + encoder 600 PPR).
 
 Todos os parâmetros foram IDENTIFICADOS a partir dos logs reais do equipamento,
-não copiados do CartPole padrão. Veja identificacao.md para a origem de cada valor.
+não copiados do CartPole padrão. Veja o README.md (secao "O modelo fisico") para a origem de cada valor.
 
 O ambiente replica, de propósito, as imperfeições do hardware:
   - quantização do encoder (0,15 graus por contagem)
@@ -35,7 +35,7 @@ OM_EPS  = 0.02       # rad/s  suavização do sinal do atrito seco
 # --- trilho e atuador ---
 # PENDENTE: a régua (600 mm entre fins de curso) implica 35800 passos/m, mas a
 # dinâmica do swing-up mede 39200 +-1200. Divergência de 9%, ainda não resolvida.
-# Até a calibração direta (ver identificacao.md secao 6), fica o valor teórico e
+# Até a calibração direta (ver o README.md, secao "Hardware"), fica o valor teórico e
 # a randomização de escala vai a +-8% para cobrir a incerteza.
 PASSOS_POR_M = 40000.0
 CURSO_M      = 0.5329       # curso útil pelo homing, NA ESCALA TEÓRICA
