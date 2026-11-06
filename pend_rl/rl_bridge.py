@@ -160,6 +160,11 @@ class Ponte:
         self.bruto = []      # (hora, texto) de TODA linha de texto
         self.crc_ruim = 0    # pacotes descartados por CRC
         self.verboso = False
+        # Acao pretendida pela rede EMBARCADA, por numero de sequencia.
+        # O firmware em modo local manda "NET <seq> <bruta>" como texto, e o
+        # seq amarra a linha a amostra binaria exata. Guardado aqui em vez de
+        # ser garimpado de self.bruto porque bruto e podado a cada 400 linhas.
+        self.net = {}
 
     # ------------- cabecalho em texto, antes do modo binario -------------
     def ler_constantes(self, espera=3.0):
@@ -209,7 +214,17 @@ class Ponte:
             self.bruto.append((time.time(), txt))
             if len(self.bruto) > 400:
                 del self.bruto[:200]
-            if txt.startswith('#'):
+            if txt.startswith('NET '):
+                # "NET <seq> <bruta>": a decisao da rede embarcada. Nao vai
+                # para msgs nem para a tela -- a 50 Hz inundaria o terminal.
+                try:
+                    _, s, b = txt.split()
+                    self.net[int(s) & 0xFF] = float(b)
+                except ValueError:
+                    pass
+                # O dicionario nao cresce: seq e 1 byte, no maximo 256 chaves,
+                # sobrescritas a cada 5,12 s. Quem consome compara e descarta.
+            elif txt.startswith('#'):
                 self.msgs.append(txt)
                 print(f'  [esp32] {txt}')
             elif self.verboso:

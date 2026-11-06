@@ -40,6 +40,17 @@
 #include <ctype.h>
 #include <math.h>
 
+// O Ator em C, gerado de modelos_sw/melhor.pt por exportar_c.py. Traz tambem
+// as escalas de normalizacao (POLITICA_X_LIM, _V_MAX, _PSID_ESC, _A_MAX),
+// geradas do mesmo pendulo_env.py que treinou o agente -- nao as redigite.
+// politica.c, politica.h e oraculo.h tem de estar nesta pasta.
+#include "politica.h"
+
+// A struct EstadoRL mora num header porque o pre-processador do Arduino injeta
+// os prototipos das funcoes no TOPO do sketch -- acima de qualquer struct
+// definida aqui. Ver a explicacao em estado_rl.h.
+#include "estado_rl.h"
+
 // ===================== PINOS =====================
 // Dois alvos de placa. O ESP32-S3 NAO tem os GPIO 22 a 25, e os 26 a 32 sao o
 // barramento da flash SPI: NENHUM pino do ESP32 classico sobrevive a migracao.
@@ -515,21 +526,36 @@ void processarSerialRL() {
   }
 }
 
-void enviarEstado(uint8_t flags) {
+// Le o estado UMA vez por fronteira de 20 ms, para que o pacote e a observacao
+// da rede vejam exatamente os mesmos numeros. O tipo e o motivo estao em
+// estado_rl.h.
+EstadoRL capturarEstado() {
+  extern float vMs;
+  EstadoRL s;
+  s.pos   = posicao;
+  s.enc   = lerContagemEnc();
+  s.v     = vMs;
+  s.omega = omega;
+  return s;
+}
+
+// Devolve o seq usado, para que a linha de texto da acao pretendida possa se
+// amarrar a amostra certa.
+uint8_t enviarEstado(const EstadoRL& s, uint8_t flags) {
   uint8_t p[21];
+  uint8_t seq = seqAtual++;
   p[0] = 0x55; p[1] = 0xAA;
-  p[2] = seqAtual++;
-  long pos = posicao;
-  long enc = lerContagemEnc();
+  p[2] = seq;
+  long pos = s.pos, enc = s.enc;
   memcpy(&p[3],  &pos, 4);
   memcpy(&p[7],  &enc, 4);
-  extern float vMs;
-  float v = vMs, om = omega;
+  float v = s.v, om = s.omega;
   memcpy(&p[11], &v,  4);
   memcpy(&p[15], &om, 4);
   p[19] = flags;
   p[20] = crc8(p, 20);
   if (Serial.availableForWrite() >= 21) Serial.write(p, 21);
+  return seq;
 }
 
 // ---------- Controle ----------
@@ -570,6 +596,15 @@ bool rlObserva = false;
 // A protecao passa a ser trilho, velocidade, aceleracao e fins de curso, todas
 // por saturacao e portanto inescapaveis pelo agente.
 bool rlCompleto = false;
+// Modo LOCAL (comando l): a rede roda NA PLACA. O PC sai do laco de controle
+// e fica so observando e gravando. Medido no ESP32 Dev Module: 335 us de p99
+// isolado, 418 us com a ISR de 40 kHz ligada -- 2,1% do passo de 20 ms.
+//
+// Combina com os outros dois modos: com `o` da o teste observador (a rede
+// calcula, o PID atua, e o PC confere amostra por amostra); com `g` da o
+// agente completo autonomo, sem PC no laco.
+bool rlLocal = false;
+bool rlLocalSaudavel = true;
 float termoI = 0;
 uint32_t chegouCentroEm = 0;
 
@@ -635,6 +670,50 @@ float acaoPID(float psi, float psiDot, float x, float dt) {
   if (!sat || (bruto > A_BAL_MAX && psi < 0) ||
               (bruto < -A_BAL_MAX && psi > 0)) termoI = candidato;
   return limitar(base + termoI, -A_BAL_MAX, A_BAL_MAX);
+}
+
+// A rede rodando NA PLACA.
+//
+// A observacao e montada a partir do INSTANTANEO, com as mesmas contas que
+// rl_bridge.py fazia no PC -- esta e a parte que precisa bater exatamente:
+//
+//   x   = (pos - limiteB/2) / passosPorM
+//   phi = ENC_SINAL * enc * 2pi / CONTAGENS_POR_VOLTA
+//   psi = wrap(pi - phi)
+//
+// Trocar duas entradas de lugar nao da erro de compilacao: da um agente que
+// decide ao contrario. E para isso que existe o modo observador.
+//
+// Devolve a aceleracao em m/s2 e escreve a saida crua em *bruta, que e o que
+// vai para o PC conferir.
+float politicaDaPlaca(const EstadoRL& s, float a_ant, float* bruta) {
+  // 2.0f, nao 2. `limiteB` e long: `limiteB / 2` e divisao INTEIRA, e com
+  // curso impar (21403 passos) da 10701 em vez de 10701,5 -- meio passo,
+  // 0,0125 mm. Fisicamente nao muda nada, mas rl_bridge.py sempre usou
+  // 21403/2 = 10701,5, e foi com ESSE x que o agente passou as nove etapas de
+  // bancada. A rede tem de ver o mesmo numero que a validou, e de quebra a
+  // comparacao do modo observador passa a fechar no arredondamento de float32
+  // em vez de num piso de 2e-05. As outras ocorrencias de `limiteB / 2` no
+  // arquivo ficam como estao: mexer nelas alteraria o PID sem necessidade.
+  float x     = (s.pos - limiteB / 2.0f) / passosPorM;
+  float phi_s = ENC_SINAL * (float)s.enc * (2.0f * PI / CONTAGENS_POR_VOLTA);
+  float psi   = wrapPi(PI - phi_s);
+
+  float obs[POLITICA_DIM_OBS];
+  politica_observar(x, s.v, psi, s.omega, a_ant, obs);
+
+  float y = politica_bruta(obs);
+  *bruta = y;
+
+  // SANIDADE: substitui o watchdog do host. Com a rede na placa nao ha PC para
+  // notar que algo deu errado, e o que pode falhar deixa de ser a comunicacao
+  // e passa a ser a propria rede -- pesos corrompidos na flash, por exemplo.
+  // A rede sadia devolve algo em [-1, 1]; 100 e folga de duas ordens.
+  if (!isfinite(y) || fabsf(y) > 100.0f) {
+    rlLocalSaudavel = false;
+    return 0.0f;
+  }
+  return limitar(y, -1.0f, 1.0f) * POLITICA_A_MAX;
 }
 
 void controle(float dt) {
@@ -793,8 +872,18 @@ void controle(float dt) {
         break;
       }
 
-      // --- WATCHDOG: o PC sumiu ---
-      if ((uint32_t)(millis() - ultimaAcaoMs) > RL_TIMEOUT_MS) {
+      // --- WATCHDOG ---
+      // Com a rede na placa o PC nao esta no laco, e esperar pacote dele
+      // pararia o pendulo sem motivo. O timeout do host da lugar a checagem de
+      // sanidade da saida da rede, feita dentro de politicaDaPlaca().
+      if (rlLocal && !rlLocalSaudavel) {
+        modo = PARADO; modoBinario = false;
+        rlCompleto = false; rlLocal = false;
+        aplicarVelocidade(0);
+        Serial.println("# RL local: saida da rede invalida. Parado.");
+        break;
+      }
+      if (!rlLocal && (uint32_t)(millis() - ultimaAcaoMs) > RL_TIMEOUT_MS) {
         if (supervisorLigado && !rlCompleto) sairRLparaPID("comunicacao perdida");
         else { modo = PARADO; modoBinario = false; rlCompleto = false;
                aplicarVelocidade(0);
@@ -818,7 +907,36 @@ void controle(float dt) {
         // do que aquele em que o agente treinou.
         if (aRL_nova) { aRL = aRL_pendente; aRL_nova = false; }
         else { pacotesPerdidos++; flags |= F_PERDEU; }
-        enviarEstado(flags);
+
+        EstadoRL s = capturarEstado();
+        uint8_t seq = enviarEstado(s, flags);
+
+        if (rlLocal) {
+          // A rede local escreve em aRL_pendente exatamente como o PC escrevia,
+          // e por isso NAO precisa de tratamento especial no atraso: a acao
+          // decidida aqui so passa a valer na fronteira seguinte. O atraso de
+          // um passo que o simulador modelou continua de pe.
+          //
+          // a_ant = a acao que esta valendo AGORA (aRL), que e o mesmo que a
+          // ponte usava: ela fazia `a_ant = a` com a acao do proprio agente,
+          // inclusive no modo observador.
+          float bruta = 0.0f;
+          aRL_pendente = politicaDaPlaca(s, aRL, &bruta);
+          aRL_nova = true;
+          ultimaAcaoMs = millis();
+
+          // A acao pretendida sai como TEXTO, amarrada ao seq do pacote. O
+          // pacote binario fica intacto em 21 bytes, nenhum CSV antigo quebra,
+          // e o PC consegue conferir amostra por amostra se a conta da placa
+          // bate com a dele. A ponte ja recolhe texto durante o modo RL -- e
+          // assim que as mensagens do supervisor chegam.
+          //
+          // O availableForWrite e obrigatorio: um printf que bloqueia dentro do
+          // laco de 1 kHz seria exatamente o tipo de atraso que este projeto
+          // passou semanas caçando.
+          if (Serial.availableForWrite() >= 32)
+            Serial.printf("NET %u %.7f\n", (unsigned)seq, bruta);
+        }
       }
 
       if (rlObserva) {
@@ -944,6 +1062,34 @@ void tratarComando(char c) {
       Serial.println("# Supervisor de angulo DESLIGADO (passaria por 180 graus).");
       Serial.println("# Protecao ativa: trilho, velocidade, aceleracao, fins de curso.");
       Serial.println("# Deixe a haste PENDURADA e LIVRE. Mao na chave de emergencia.");
+      break;
+
+    case 'l':
+      // LOCAL: a rede passa a rodar na placa. Como 'o' e 'g', tem de ser
+      // escolhido ANTES de entrar no modo RL -- dentro dele a serial esta em
+      // binario e comandos de texto nao sao lidos.
+      if (modo == RL) {
+        Serial.println("# Escolha antes de entrar no modo RL (s para parar).");
+        break;
+      }
+      rlLocal = !rlLocal;
+      rlLocalSaudavel = true;
+      if (rlLocal) {
+        float bruta = 0.0f;
+        EstadoRL s = capturarEstado();
+        float a = politicaDaPlaca(s, 0.0f, &bruta);
+        Serial.println("# REDE LOCAL LIGADA: a inferencia roda na placa e o PC");
+        Serial.println("#   sai do laco de controle. Watchdog do host desativado;");
+        Serial.println("#   no lugar dele vai a sanidade da saida da rede.");
+        Serial.printf("#   teste a seco no estado atual: bruta=%.7f -> %.3f m/s2\n",
+                      bruta, a);
+        Serial.printf("#   rede %d->%d->%d->%d, %d parametros\n",
+                      POLITICA_DIM_OBS, POLITICA_OCULTA, POLITICA_OCULTA,
+                      POLITICA_DIM_ACAO, POLITICA_N_PARAM);
+        Serial.println("#   combine com o (observador) ou g (agente completo).");
+      } else {
+        Serial.println("# Rede local DESLIGADA: a acao volta a vir do PC.");
+      }
       break;
 
     case 's':
@@ -1074,6 +1220,16 @@ void setup() {
   limiteSupB = limiteB;
 
   iniciarHistorico();
+
+  // Copia os pesos de flash para SRAM interna ANTES de qualquer medicao de
+  // tempo. Deixar a copia para a primeira inferencia poria 18,7 kB de memcpy
+  // dentro de um ciclo de controle.
+  politica_iniciar();
+  Serial.printf("# Rede embarcada: %d->%d->%d->%d, %d parametros, %d bytes "
+                "em SRAM\n",
+                POLITICA_DIM_OBS, POLITICA_OCULTA, POLITICA_OCULTA,
+                POLITICA_DIM_ACAO, POLITICA_N_PARAM, 4 * POLITICA_N_PARAM);
+
   iniciarTimer();
   tCtl = micros();
 
@@ -1084,6 +1240,7 @@ void setup() {
                 "Swing-up e PID rodam em 100%%.\n", 100 * fatorV);
   Serial.println("# Indo ao meio. Com a haste pendurada e parada, envie z.");
   Serial.println("# i = swing-up+PID | e = PID manual | r = modo AGENTE | s = parar");
+  Serial.println("# l = rede LOCAL (roda na placa) | o = observador | g = agente completo");
 }
 
 // ===================== LOOP =====================

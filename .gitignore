@@ -1,0 +1,17 @@
+# Ambientes virtuais -- recriaveis a partir de pend_rl/requirements.txt
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Artefatos de compilacao da politica em C.
+# politica.c/.h/oraculo.h SAO versionados (sao o modelo embarcado);
+# o que sai do compilador, nao.
+*.so
+pend_rl/firmware/politica/teste_politica
+pend_rl/firmware/politica/teste_lut
