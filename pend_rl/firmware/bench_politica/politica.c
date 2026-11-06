@@ -10,6 +10,13 @@
 #include <math.h>
 #include <string.h>
 
+/* O core do ESP32 compila com -Os (tamanho). Num laco denso de float isso
+ * custa caro, e a IDE do Arduino nao expoe a opcao -- dai o pragma. Medido no
+ * ESP32 Dev Module com -O2: 335 us de p99, sendo 70% em tanhf. Sem o pragma o
+ * numero sai pessimista e da a impressao de que a LUT e necessaria.
+ * Em quem ja passa -O2 na linha de comando, e inofensivo. */
+#pragma GCC optimize ("O2")
+
 /* LIGAR A TABELA DE TANH SEM MEXER NA LINHA DE COMANDO.
  * Descomente a linha abaixo -- util na IDE do Arduino, que nao da acesso
  * facil as flags do compilador. Leia o bloco seguinte antes. */
